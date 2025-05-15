@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls';
 import { useGameStore } from '~/stores/game';
 
-const container = ref<HTMLElement | null>(null);
+const container = ref(null);
 const gameStore = useGameStore();
 
 // Three.js variables
@@ -24,61 +24,57 @@ let animationFrameId;
 const playerMeshes = new Map();
 
 onMounted(() => {
-  // Connect to server first to ensure game state is ready
+  // Connect to server
   gameStore.connectToServer();
   
-  // Wait for DOM to be fully loaded before initializing Three.js
-  setTimeout(() => {
-    if (!container.value) return;
-    
-    // Scene setup
-    scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    container.value.appendChild(renderer.domElement);
-    
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x404040);
-    scene.add(ambientLight);
-    
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(0, 1, 0);
-    scene.add(directionalLight);
-    
-    // Create planet (sphere)
-    const planetGeometry = new THREE.SphereGeometry(gameStore.planetRadius, 32, 32);
-    const planetMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x5555ff,
-      roughness: 0.8,
-      metalness: 0.2
-    });
-    const planet = new THREE.Mesh(planetGeometry, planetMaterial);
-    scene.add(planet);
-    
-    // Set up camera controls
-    controls = new PointerLockControls(camera, renderer.domElement);
-    
-    container.value.addEventListener('click', () => {
-      controls.lock();
-    });
-    
-    controls.addEventListener('lock', () => {
-      console.log('Controls locked');
-    });
-    
-    controls.addEventListener('unlock', () => {
-      console.log('Controls unlocked');
-    });
-    
-    // Set up event listeners
-    setupEventListeners();
-    
-    // Start animation loop
-    animate();
-  }, 0);
+  // Initialize Three.js
+  if (!container.value) return;
+  
+  // Scene setup
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x000020);
+  
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  container.value.appendChild(renderer.domElement);
+  
+  // Lighting
+  const ambientLight = new THREE.AmbientLight(0x404040);
+  scene.add(ambientLight);
+  
+  const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+  directionalLight.position.set(0, 1, 0);
+  scene.add(directionalLight);
+  
+  // Create planet (sphere)
+  const planetGeometry = new THREE.SphereGeometry(gameStore.planetRadius, 32, 32);
+  const planetMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x5555ff,
+    roughness: 0.8,
+    metalness: 0.2
+  });
+  const planet = new THREE.Mesh(planetGeometry, planetMaterial);
+  scene.add(planet);
+  
+  // Set up camera controls
+  controls = new PointerLockControls(camera, renderer.domElement);
+  
+  container.value.addEventListener('click', () => {
+    controls.lock();
+  });
+  
+  // Initial camera position
+  camera.position.set(0, gameStore.planetRadius + 10, 0);
+  camera.lookAt(0, 0, 0);
+  
+  // Set up event listeners
+  setupEventListeners();
+  
+  // Start animation loop
+  animate();
 });
 
 onUnmounted(() => {
@@ -92,7 +88,6 @@ onUnmounted(() => {
   
   if (renderer) {
     renderer.dispose();
-    renderer.forceContextLoss();
   }
 });
 
@@ -126,17 +121,12 @@ function updateCameraOrientation() {
   const playerData = gameStore.getMyPlayerData();
   if (!playerData) return;
   
-  // Calculate up vector (away from planet center)
-  const pos = new THREE.Vector3(
+  // Position camera at player position
+  camera.position.copy(new THREE.Vector3(
     playerData.pos.x,
     playerData.pos.y,
     playerData.pos.z
-  );
-  
-  const upVector = pos.clone().normalize();
-  
-  // Position camera at player position
-  camera.position.copy(pos);
+  ));
   
   // Orient camera based on player rotation
   camera.quaternion.setFromEuler(new THREE.Euler(
@@ -156,10 +146,7 @@ function updateOtherPlayers() {
   for (const playerData of gameStore.lastServerState.players) {
     seenIds.add(playerData.id);
     
-    if (playerData.id === gameStore.myId) {
-      // This is our player
-      continue;
-    }
+    if (playerData.id === gameStore.myId) continue;
     
     if (!playerMeshes.has(playerData.id)) {
       // Create new player model
@@ -183,7 +170,7 @@ function updateOtherPlayers() {
     player.targetRot = { ...playerData.rot };
     
     // Simple interpolation
-    const t = 0.2; // Adjust for smoothness
+    const t = 0.2;
     player.pos = gameStore.lerpVectors(player.pos, player.targetPos, t);
     
     // Update mesh position
@@ -202,7 +189,7 @@ function updateOtherPlayers() {
     lookVector.y = Math.sin(player.targetRot.x);
     lookVector.z = Math.cos(player.targetRot.y) * Math.cos(player.targetRot.x);
     
-    // Create quaternion from up vector (normal) and forward vector
+    // Create quaternion from up vector and forward vector
     const quaternion = new THREE.Quaternion();
     const matrix = new THREE.Matrix4().lookAt(
       lookVector,
@@ -227,7 +214,7 @@ function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
   // Get camera direction for input
-  if (controls.isLocked) {
+  if (controls && controls.isLocked) {
     const cameraDirection = new THREE.Vector3();
     camera.getWorldDirection(cameraDirection);
     
@@ -240,7 +227,11 @@ function animate() {
     gameStore.sendInput(rotation);
   }
   
-  updateCameraOrientation();
+  const playerData = gameStore.getMyPlayerData();
+  if (playerData) {
+    updateCameraOrientation();
+  }
+  
   updateOtherPlayers();
   
   renderer.render(scene, camera);
@@ -252,6 +243,7 @@ function animate() {
   width: 100vw;
   height: 100vh;
   position: relative;
+  background-color: #000;
 }
 
 .crosshair {
