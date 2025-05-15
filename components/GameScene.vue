@@ -15,22 +15,17 @@ const gameStore = useGameStore();
 const isPointerLocked = ref(false);
 
 // Three.js variables
-let scene;
-let camera;
-let renderer;
-let animationFrameId;
-let cameraRotation = { x: 0, y: 0 }; // Track camera rotation separately
+let scene, camera, renderer, animationFrameId;
+let cameraRotation = { x: 0, y: 0 };
 
 // Game objects
 const playerMeshes = new Map();
-let localPlayerObject; // Parent object for the camera
-let localPlayerMesh; // Visual mesh for local player
+let localPlayerObject, localPlayerMesh;
 
 onMounted(() => {
   // Connect to server
   gameStore.connectToServer();
   
-  // Initialize Three.js
   if (!container.value) return;
   
   // Scene setup
@@ -45,57 +40,49 @@ onMounted(() => {
   container.value.appendChild(renderer.domElement);
   
   // Lighting
-  const ambientLight = new THREE.AmbientLight(0x404040);
-  scene.add(ambientLight);
+  scene.add(new THREE.AmbientLight(0x404040));
   
   const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
   directionalLight.position.set(0, 1, 0);
   scene.add(directionalLight);
   
-  // Create planet (sphere)
-  const planetGeometry = new THREE.SphereGeometry(gameStore.planetRadius, 32, 32);
-  const planetMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0x5555ff,
-    roughness: 0.8,
-    metalness: 0.2
-  });
-  const planet = new THREE.Mesh(planetGeometry, planetMaterial);
+  // Create planet
+  const planet = new THREE.Mesh(
+    new THREE.SphereGeometry(gameStore.planetRadius, 32, 32),
+    new THREE.MeshStandardMaterial({ color: 0x5555ff, roughness: 0.8, metalness: 0.2 })
+  );
   scene.add(planet);
   
-  // Create local player object to hold the camera
+  // Create local player object and mesh
   localPlayerObject = new THREE.Group();
   scene.add(localPlayerObject);
   
-  // Create local player mesh
-  const playerGeometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
-  const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 }); // Green for local player
-  localPlayerMesh = new THREE.Mesh(playerGeometry, playerMaterial);
+  localPlayerMesh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.5, 1, 4, 8),
+    new THREE.MeshStandardMaterial({ color: 0x00ff00 })
+  );
   localPlayerObject.add(localPlayerMesh);
   
-  // Create a separate object to handle camera rotation
+  // Camera setup
   const cameraHolder = new THREE.Object3D();
-  cameraHolder.position.set(0, 0.7, 0); // Position camera at head height
+  cameraHolder.position.set(0, 0.7, 0);
   localPlayerObject.add(cameraHolder);
-  
-  // Add camera to the camera holder
-  camera.position.set(0, 0, 0);
   cameraHolder.add(camera);
   
-  // Manual pointer lock implementation
+  // Event setup
   container.value.addEventListener('click', requestPointerLock);
+  setupEventListeners();
   
   // Initial position
   localPlayerObject.position.set(0, gameStore.planetRadius + 10, 0);
   
-  // Set up event listeners
-  setupEventListeners();
-  
-  // Start animation loop
   animate();
 });
 
 onUnmounted(() => {
   cancelAnimationFrame(animationFrameId);
+  
+  // Remove event listeners
   document.removeEventListener('pointerlockchange', handlePointerLockChange);
   document.removeEventListener('pointerlockerror', handlePointerLockError);
   document.removeEventListener('mousemove', handleMouseMove);
@@ -103,17 +90,9 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('keyup', handleKeyUp);
   
-  if (document.exitPointerLock) {
-    document.exitPointerLock();
-  }
-  
-  if (gameStore.ws) {
-    gameStore.ws.close();
-  }
-  
-  if (renderer) {
-    renderer.dispose();
-  }
+  document.exitPointerLock?.();
+  gameStore.ws?.close();
+  renderer?.dispose();
 });
 
 function setupEventListeners() {
@@ -143,11 +122,11 @@ function handlePointerLockError() {
 }
 
 function handleResize() {
-  if (camera && renderer) {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  }
+  if (!camera || !renderer) return;
+  
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 function handleKeyDown(e) {
@@ -163,115 +142,73 @@ function handleKeyUp(e) {
 }
 
 function handleMouseMove(event) {
-  if (isPointerLocked.value) {
-    // Mouse sensitivity (adjust as needed)
-    const sensitivity = 0.002;
-    
-    // Update camera rotation based on mouse movement
-    cameraRotation.x -= event.movementY * sensitivity;
-    cameraRotation.y -= event.movementX * sensitivity;
-    
-    // Limit vertical rotation to avoid flipping
-    cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
-  }
+  if (!isPointerLocked.value) return;
+  
+  // Update camera rotation with sensitivity
+  cameraRotation.x -= event.movementY * 0.002;
+  cameraRotation.y -= event.movementX * 0.002;
+  
+  // Limit vertical rotation
+  cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
 }
 
 function updateCameraOrientation() {
   const playerData = gameStore.getMyPlayerData();
-  if (!playerData) return;
+  if (!playerData || !localPlayerMesh) return;
   
-  // Update the local player object position
-  localPlayerObject.position.set(
-    playerData.pos.x,
-    playerData.pos.y,
-    playerData.pos.z
-  );
+  // Update position (combine vector creation and copying)
+  localPlayerObject.position.set(playerData.pos.x, playerData.pos.y, playerData.pos.z);
   
-  // Get surface normal vector
-  const normalVector = new THREE.Vector3(
-    playerData.normal.x,
-    playerData.normal.y,
-    playerData.normal.z
-  ).normalize();
+  // Create and normalize normal vector in one step
+  const normalVector = new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z).normalize();
+  const cameraHolder = camera.parent;
   
   if (!playerData.falling) {
-    // When on surface, align the player's up direction with the surface normal
-    const upQuat = new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0), // Original up vector
-      normalVector                // New up vector (surface normal)
-    );
+    // Set quaternion directly from normal vector
+    localPlayerObject.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normalVector);
     
-    // Apply the upward orientation to the player object
-    localPlayerObject.quaternion.copy(upQuat);
+    // Reset and apply rotations in one chain
+    cameraHolder.quaternion.identity()
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.y))
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), cameraRotation.x));
     
-    // Now apply the camera's local rotation
-    // We want to rotate around the local Y axis for horizontal rotation
-    const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 1, 0),
-      cameraRotation.y
-    );
+    // Orient to normal but facing camera
+    const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraHolder.quaternion).projectOnPlane(normalVector);
     
-    // And around the local X axis for vertical rotation
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0),
-      cameraRotation.x
-    );
-    
-    // Apply the rotations to camera's parent
-    const cameraHolder = camera.parent;
-    cameraHolder.quaternion.copy(new THREE.Quaternion());
-    cameraHolder.quaternion.multiply(yawQuat).multiply(pitchQuat);
-  } else {
-    // When falling, use direct camera control without surface normal influence
-    localPlayerObject.quaternion.identity();
-    
-    // Apply camera rotation directly
-    const euler = new THREE.Euler(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
-    camera.parent.quaternion.setFromEuler(euler);
-  }
-  
-  // Orient the player mesh
-  if (localPlayerMesh) {
-    if (playerData.falling) {
-      // When falling, match player mesh to camera orientation
-      localPlayerMesh.quaternion.copy(camera.parent.quaternion);
-    } else {
-      // When grounded, keep player mesh upright on the surface but facing camera direction
-      const cameraDirection = new THREE.Vector3(0, 0, -1);
-      cameraDirection.applyQuaternion(camera.parent.quaternion);
-      cameraDirection.projectOnPlane(normalVector);
-      
-      if (cameraDirection.length() > 0.001) {
-        cameraDirection.normalize();
-        const lookQuat = new THREE.Quaternion();
-        const lookMatrix = new THREE.Matrix4().lookAt(
+    if (cameraDirection.length() > 0.001) {
+      cameraDirection.normalize();
+      localPlayerMesh.quaternion.setFromRotationMatrix(
+        new THREE.Matrix4().lookAt(
           localPlayerMesh.position,
           new THREE.Vector3().addVectors(localPlayerMesh.position, cameraDirection),
           normalVector
-        );
-        lookQuat.setFromRotationMatrix(lookMatrix);
-        localPlayerMesh.quaternion.copy(lookQuat);
-      }
+        )
+      );
     }
+  } else {
+    // When falling, simplify by doing everything in one step
+    const euler = new THREE.Euler(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
+    localPlayerObject.quaternion.identity();
+    cameraHolder.quaternion.setFromEuler(euler);
+    localPlayerMesh.quaternion.copy(cameraHolder.quaternion);
   }
 }
 
 function updateOtherPlayers() {
   if (!gameStore.lastServerState) return;
   
-  // Set of players we've seen this frame
   const seenIds = new Set();
   
   for (const playerData of gameStore.lastServerState.players) {
+    if (playerData.id === gameStore.myId) continue; // Skip early
     seenIds.add(playerData.id);
     
-    if (playerData.id === gameStore.myId) continue;
-    
     if (!playerMeshes.has(playerData.id)) {
-      // Create new player model with capsule geometry from core Three.js
-      const playerGeometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
-      const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-      const playerMesh = new THREE.Mesh(playerGeometry, playerMaterial);
+      // Create new player
+      const playerMesh = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.5, 1, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0xff0000 })
+      );
       scene.add(playerMesh);
       
       playerMeshes.set(playerData.id, {
@@ -293,41 +230,33 @@ function updateOtherPlayers() {
     player.targetNormal = { ...(playerData.normal || { x: 0, y: 1, z: 0 }) };
     player.falling = playerData.falling;
     
-    // Simple interpolation
+    // Interpolate and position
     const t = 0.2;
     player.pos = gameStore.lerpVectors(player.pos, player.targetPos, t);
     player.normal = gameStore.lerpVectors(player.normal, player.targetNormal, t);
-    
-    // Update mesh position
     player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
     
     if (player.falling) {
-      // When falling, allow free rotation without normal constraint
-      const euler = new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ');
-      player.mesh.quaternion.setFromEuler(euler);
+      player.mesh.quaternion.setFromEuler(new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ'));
     } else {
-      // When grounded, orient player to stand on surface using the normal
+      // Orient to surface
       const normalVector = new THREE.Vector3(
-        player.normal.x,
-        player.normal.y,
-        player.normal.z
+        player.normal.x, player.normal.y, player.normal.z
       ).normalize();
       
-      // Look at direction
-      const lookVector = new THREE.Vector3();
-      lookVector.x = Math.sin(player.targetRot.y) * Math.cos(player.targetRot.x);
-      lookVector.y = Math.sin(player.targetRot.x);
-      lookVector.z = Math.cos(player.targetRot.y) * Math.cos(player.targetRot.x);
+      const lookVector = new THREE.Vector3(
+        Math.sin(player.targetRot.y) * Math.cos(player.targetRot.x),
+        Math.sin(player.targetRot.x),
+        Math.cos(player.targetRot.y) * Math.cos(player.targetRot.x)
+      );
       
-      // Create quaternion from up vector and forward vector
-      const quaternion = new THREE.Quaternion();
       const matrix = new THREE.Matrix4().lookAt(
         new THREE.Vector3(0, 0, 0),
         lookVector,
         normalVector
       );
-      quaternion.setFromRotationMatrix(matrix);
       
+      const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
       player.mesh.quaternion.slerp(quaternion, 0.2);
     }
   }
@@ -344,12 +273,8 @@ function updateOtherPlayers() {
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
-  if (isPointerLocked.value) {
-    const playerData = gameStore.getMyPlayerData();
-    if (playerData) {
-      // Send the current camera rotation to the server
-      gameStore.sendInput(cameraRotation);
-    }
+  if (isPointerLocked.value && gameStore.getMyPlayerData()) {
+    gameStore.sendInput(cameraRotation);
   }
   
   updateCameraOrientation();

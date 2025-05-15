@@ -1,5 +1,4 @@
 import { defineStore } from 'pinia';
-import * as THREE from 'three';
 
 export const useGameStore = defineStore('game', {
   state: () => ({
@@ -17,11 +16,9 @@ export const useGameStore = defineStore('game', {
   actions: {
     connectToServer() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // Fix incorrect process.dev check and use the correct port
       const host = process.env.NODE_ENV === 'development' ? 'localhost:3001' : window.location.host;
-      const wsUrl = `${protocol}//${host}`;
       
-      this.ws = new WebSocket(wsUrl);
+      this.ws = new WebSocket(`${protocol}//${host}`);
       
       this.ws.onopen = () => {
         console.log('Connected to server');
@@ -48,38 +45,33 @@ export const useGameStore = defineStore('game', {
         setTimeout(() => this.connectToServer(), 3000);
       };
       
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
+      this.ws.onerror = error => console.error('WebSocket error:', error);
     },
     
     sendInput(rotation) {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        const direction = { x: 0, y: 0, z: 0 };
-        
-        if (this.keys.w) direction.z = -1;
-        if (this.keys.s) direction.z = 1;
-        if (this.keys.a) direction.x = -1;
-        if (this.keys.d) direction.x = 1;
-        
-        // Include jump input
-        const jump = this.keys[' '] || false;
-        
-        this.ws.send(JSON.stringify({
-          type: 'input',
-          data: {
-            dir: direction,
-            rot: rotation,
-            jump: jump,
-            timestamp: Date.now()
-          }
-        }));
-      }
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      
+      // Build direction object directly
+      const dir = { 
+        x: (this.keys.a ? -1 : 0) + (this.keys.d ? 1 : 0),
+        y: 0,
+        z: (this.keys.w ? -1 : 0) + (this.keys.s ? 1 : 0)
+      };
+      
+      // Only send if there's actual input
+      this.ws.send(JSON.stringify({
+        type: 'input',
+        data: {
+          dir,
+          rot: rotation,
+          jump: this.keys[' '] || false,
+          timestamp: Date.now()
+        }
+      }));
     },
     
     getMyPlayerData() {
-      if (!this.lastServerState) return null;
-      return this.lastServerState.players.find((p) => p.id === this.myId);
+      return this.lastServerState?.players.find(p => p.id === this.myId) || null;
     },
     
     lerpVectors(a, b, t) {
