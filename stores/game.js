@@ -17,7 +17,8 @@ export const useGameStore = defineStore('game', {
   actions: {
     connectToServer() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = process.dev ? 'localhost:3000' : window.location.host;
+      // Fix incorrect process.dev check and use the correct port
+      const host = process.env.NODE_ENV === 'development' ? 'localhost:3001' : window.location.host;
       const wsUrl = `${protocol}//${host}`;
       
       this.ws = new WebSocket(wsUrl);
