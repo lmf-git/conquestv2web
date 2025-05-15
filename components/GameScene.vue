@@ -4,7 +4,7 @@
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls';
@@ -14,11 +14,11 @@ const container = ref<HTMLElement | null>(null);
 const gameStore = useGameStore();
 
 // Three.js variables
-let scene: THREE.Scene;
-let camera: THREE.PerspectiveCamera;
-let renderer: THREE.WebGLRenderer;
-let controls: PointerLockControls;
-let animationFrameId: number;
+let scene;
+let camera;
+let renderer;
+let controls;
+let animationFrameId;
 
 // Game objects
 const playerMeshes = new Map();
@@ -105,15 +105,15 @@ function handleResize() {
   }
 }
 
-function handleKeyDown(e: KeyboardEvent) {
+function handleKeyDown(e) {
   if (gameStore.keys.hasOwnProperty(e.key.toLowerCase())) {
-    gameStore.keys[e.key.toLowerCase() as keyof typeof gameStore.keys] = true;
+    gameStore.keys[e.key.toLowerCase()] = true;
   }
 }
 
-function handleKeyUp(e: KeyboardEvent) {
+function handleKeyUp(e) {
   if (gameStore.keys.hasOwnProperty(e.key.toLowerCase())) {
-    gameStore.keys[e.key.toLowerCase() as keyof typeof gameStore.keys] = false;
+    gameStore.keys[e.key.toLowerCase()] = false;
   }
 }
 

@@ -1,15 +1,14 @@
 import { defineStore } from 'pinia';
 import * as THREE from 'three';
-import { type Vector3Object } from '~/types';
 
 export const useGameStore = defineStore('game', {
   state: () => ({
     players: new Map(),
-    myId: null as string | null,
+    myId: null,
     planetRadius: 100,
-    ws: null as WebSocket | null,
-    lastServerState: null as any,
-    previousServerState: null as any,
+    ws: null,
+    lastServerState: null,
+    previousServerState: null,
     keys: { w: false, a: false, s: false, d: false, ' ': false },
     isConnected: false,
     isInitialized: false
@@ -53,7 +52,7 @@ export const useGameStore = defineStore('game', {
       };
     },
     
-    sendInput(rotation: { x: number, y: number }) {
+    sendInput(rotation) {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         const direction = { x: 0, y: 0, z: 0 };
         
@@ -75,10 +74,10 @@ export const useGameStore = defineStore('game', {
     
     getMyPlayerData() {
       if (!this.lastServerState) return null;
-      return this.lastServerState.players.find((p: any) => p.id === this.myId);
+      return this.lastServerState.players.find((p) => p.id === this.myId);
     },
     
-    lerpVectors(a: Vector3Object, b: Vector3Object, t: number): Vector3Object {
+    lerpVectors(a, b, t) {
       return {
         x: a.x + (b.x - a.x) * t,
         y: a.y + (b.y - a.y) * t,
