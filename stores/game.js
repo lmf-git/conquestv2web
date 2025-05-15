@@ -62,11 +62,15 @@ export const useGameStore = defineStore('game', {
         if (this.keys.a) direction.x = -1;
         if (this.keys.d) direction.x = 1;
         
+        // Include jump input
+        const jump = this.keys[' '] || false;
+        
         this.ws.send(JSON.stringify({
           type: 'input',
           data: {
             dir: direction,
             rot: rotation,
+            jump: jump,
             timestamp: Date.now()
           }
         }));
