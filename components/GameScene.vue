@@ -24,10 +24,61 @@ let animationFrameId;
 const playerMeshes = new Map();
 
 onMounted(() => {
-  initThreeJS();
-  setupEventListeners();
+  // Connect to server first to ensure game state is ready
   gameStore.connectToServer();
-  animate();
+  
+  // Wait for DOM to be fully loaded before initializing Three.js
+  setTimeout(() => {
+    if (!container.value) return;
+    
+    // Scene setup
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    container.value.appendChild(renderer.domElement);
+    
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0x404040);
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(0, 1, 0);
+    scene.add(directionalLight);
+    
+    // Create planet (sphere)
+    const planetGeometry = new THREE.SphereGeometry(gameStore.planetRadius, 32, 32);
+    const planetMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x5555ff,
+      roughness: 0.8,
+      metalness: 0.2
+    });
+    const planet = new THREE.Mesh(planetGeometry, planetMaterial);
+    scene.add(planet);
+    
+    // Set up camera controls
+    controls = new PointerLockControls(camera, renderer.domElement);
+    
+    container.value.addEventListener('click', () => {
+      controls.lock();
+    });
+    
+    controls.addEventListener('lock', () => {
+      console.log('Controls locked');
+    });
+    
+    controls.addEventListener('unlock', () => {
+      console.log('Controls unlocked');
+    });
+    
+    // Set up event listeners
+    setupEventListeners();
+    
+    // Start animation loop
+    animate();
+  }, 0);
 });
 
 onUnmounted(() => {
@@ -44,52 +95,6 @@ onUnmounted(() => {
     renderer.forceContextLoss();
   }
 });
-
-function initThreeJS() {
-  if (!container.value) return;
-  
-  // Scene setup
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-  
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio);
-  container.value.appendChild(renderer.domElement);
-  
-  // Lighting
-  const ambientLight = new THREE.AmbientLight(0x404040);
-  scene.add(ambientLight);
-  
-  const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-  directionalLight.position.set(0, 1, 0);
-  scene.add(directionalLight);
-  
-  // Create planet (sphere)
-  const planetGeometry = new THREE.SphereGeometry(gameStore.planetRadius, 32, 32);
-  const planetMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0x5555ff,
-    roughness: 0.8,
-    metalness: 0.2
-  });
-  const planet = new THREE.Mesh(planetGeometry, planetMaterial);
-  scene.add(planet);
-  
-  // Set up camera controls
-  controls = new PointerLockControls(camera, renderer.domElement);
-  
-  container.value.addEventListener('click', () => {
-    controls.lock();
-  });
-  
-  controls.addEventListener('lock', () => {
-    console.log('Controls locked');
-  });
-  
-  controls.addEventListener('unlock', () => {
-    console.log('Controls unlocked');
-  });
-}
 
 function setupEventListeners() {
   window.addEventListener('resize', handleResize);
