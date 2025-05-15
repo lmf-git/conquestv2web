@@ -1,0 +1,21 @@
+{
+  "name": "conquestv2-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "@pinia/nuxt": "^0.5.1",
+    "pinia": "^2.1.7",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "nuxt": "^3.9.0",
+    "typescript": "^5.3.3"
+  }
+}
