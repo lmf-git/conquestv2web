@@ -4,15 +4,28 @@
       <div class="crosshair" v-if="isPointerLocked"></div>
       <div v-if="!isPointerLocked" class="click-prompt">Click to play</div>
       <div v-if="debug" class="debug-info">{{ debugInfo }}</div>
+      
+      <!-- Simple HUD showing current mode - no transition bar -->
+      <div v-if="isPointerLocked" class="mode-indicator">
+        <div class="mode-text">{{ currentModeText }}</div>
+        <div class="controls-hint">
+          <template v-if="inSpaceMode">
+            W/A/S/D: Thrust | Space: Up | CTRL: Down
+          </template>
+          <template v-else>
+            W/A/S/D: Move | Space: Jump
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import * as THREE from 'three';
 import { 
-  PLANET_RADIUS, BOX, STATIC_BOXES, MOVING_BOXES,
+  PLANET_RADIUS, BOX, STATIC_BOXES, MOVING_BOXES, MODE_TRANSITION_HEIGHT,
   calculateSurfacePosition, calculateNormal, crossProduct, lerpVectors
 } from 'conquest-shared';
 
@@ -30,6 +43,14 @@ const isPointerLocked = ref(false);
 const container = ref(null);
 const debug = ref(process.env.NODE_ENV === 'development');
 const debugInfo = ref('');
+
+// Mode tracking variables - removed transition progress
+const inSpaceMode = ref(false);
+
+// Computed properties for HUD
+const currentModeText = computed(() => 
+  inSpaceMode.value ? "SPACE MODE" : "GROUND MODE"
+);
 
 // Three.js variables with simplified initialization
 let scene, camera, renderer, animationFrameId;
@@ -79,12 +100,16 @@ const connectToServer = () => {
   };
 };
 
-// Simplified input sender
+// Simplified input sender with crouch support
 const sendInput = (cameraRotation, normalVector) => {
   if (ws.value?.readyState === WebSocket.OPEN) {
     ws.value.send(JSON.stringify({
       type: 'input',
-      keys: { ...keys.value },
+      keys: { 
+        ...keys.value,
+        // Add crouch key for downward thrust in space mode
+        crouch: keys.value.Control || keys.value.c || false
+      },
       rotation: { ...cameraRotation },
       normal: normalVector
     }));
@@ -127,8 +152,14 @@ const handleMouseMove = (event) => {
   cameraRotation.x -= movementY * 0.002; // Look up/down
   cameraRotation.y -= movementX * 0.002; // Look left/right
   
-  // Clamp vertical rotation to prevent flipping
-  cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
+  // In space mode, allow full 360° rotation
+  if (inSpaceMode.value) {
+    // Clamp pitch to avoid gimbal lock, but allow more freedom
+    cameraRotation.x = Math.max(-Math.PI * 0.9, Math.min(Math.PI * 0.9, cameraRotation.x));
+  } else {
+    // For ground mode, use standard FPS limits
+    cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
+  }
   
   if (debug.value) {
     debugInfo.value = `Camera rotation: ${cameraRotation.x.toFixed(2)}, ${cameraRotation.y.toFixed(2)}`;
@@ -147,8 +178,11 @@ const handleResize = () => {
 // Keyboard event handlers
 const handleKeyDown = (event) => {
   const key = event.key.toLowerCase();
-  if (keys.value.hasOwnProperty(key)) {
-    keys.value[key] = true;
+  keys.value[key] = true;
+  
+  // Also capture Control key for downward thrust in space mode
+  if (event.key === 'Control') {
+    keys.value.Control = true;
   }
 };
 
@@ -157,12 +191,20 @@ const handleKeyUp = (event) => {
   if (keys.value.hasOwnProperty(key)) {
     keys.value[key] = false;
   }
+  
+  // Release Control key
+  if (event.key === 'Control') {
+    keys.value.Control = false;
+  }
 };
 
-// Enhanced camera orientation based on spherical gravity
+// Enhanced camera orientation based on mode (space or ground)
 function updateCameraOrientation() {
   const playerData = getMyPlayerData();
   if (!playerData) return;
+  
+  // Update mode state from server data - instant transition
+  inSpaceMode.value = playerData.inSpaceMode || false;
   
   // Smooth position updates from physics
   const lerpFactor = 0.3; // Adjust for balance between smoothness and responsiveness
@@ -183,6 +225,64 @@ function updateCameraOrientation() {
   
   currentPosition.lerp(targetPosition, actualLerpFactor);
   
+  if (inSpaceMode.value) {
+    // Space mode: orientation follows camera directly with 6DOF
+    updateSpaceModeCamera(playerData);
+  } else {
+    // Ground mode: orientation follows surface normal
+    updateGroundModeCamera(playerData);
+  }
+}
+
+// Update camera for space mode - 6DOF movement
+function updateSpaceModeCamera(playerData) {
+  // In space, the player's orientation is based purely on the camera
+  // with no gravity constraints
+  const orientation = playerData.spaceOrientation || {
+    forward: {
+      x: Math.sin(cameraRotation.y) * Math.cos(cameraRotation.x),
+      y: Math.sin(cameraRotation.x),
+      z: Math.cos(cameraRotation.y) * Math.cos(cameraRotation.x)
+    },
+    up: { x: 0, y: 1, z: 0 }
+  };
+  
+  // Create forward and up vectors
+  const forward = new THREE.Vector3(
+    orientation.forward.x,
+    orientation.forward.y,
+    orientation.forward.z
+  ).normalize();
+  
+  const up = new THREE.Vector3(
+    orientation.up.x,
+    orientation.up.y,
+    orientation.up.z
+  ).normalize();
+  
+  // Create a basis matrix for orientation
+  const right = new THREE.Vector3().crossVectors(forward, up).normalize();
+  const correctedUp = new THREE.Vector3().crossVectors(right, forward).normalize();
+  
+  // Apply to player model
+  const rotMatrix = new THREE.Matrix4().makeBasis(
+    right,
+    correctedUp,
+    forward.clone().negate()
+  );
+  
+  // Apply rotation to player object
+  localPlayerObject.quaternion.setFromRotationMatrix(rotMatrix);
+  
+  // Camera pitch is handled directly
+  const cameraHolder = camera.parent;
+  
+  // In space mode, camera follows player orientation exactly
+  cameraHolder.quaternion.identity();
+}
+
+// Update camera for ground mode - surface-following
+function updateGroundModeCamera(playerData) {
   // Determine up vector - use contact normal if available, otherwise use position normal
   const upVector = new THREE.Vector3(
     playerData.contactNormal?.x || playerData.normal.x,
@@ -233,7 +333,85 @@ function alignWithSurface(object, upVector, rotation) {
   object.quaternion.setFromRotationMatrix(rotMatrix);
 }
 
-// Box update function - was missing
+// Update other players with mode-specific orientation
+function updateOtherPlayers() {
+  if (!lastServerState.value) return;
+  
+  const seenIds = new Set();
+  
+  for (const playerData of lastServerState.value.players) {
+    if (playerData.id === myId.value) continue;
+    seenIds.add(playerData.id);
+    
+    if (!playerMeshes.has(playerData.id)) {
+      const playerMesh = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.5, 1, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0xff0000 })
+      );
+      scene.add(playerMesh);
+      playerMeshes.set(playerData.id, {
+        mesh: playerMesh,
+        pos: { ...playerData.pos },
+        rot: { ...playerData.rot },
+        normal: { ...playerData.normal },
+        falling: playerData.falling,
+        inSpaceMode: playerData.inSpaceMode || false
+      });
+    }
+    
+    // Update player with concise property assignments
+    const player = playerMeshes.get(playerData.id);
+    Object.assign(player, {
+      pos: { ...playerData.pos }, 
+      normal: { ...playerData.normal },
+      falling: playerData.falling,
+      inSpaceMode: playerData.inSpaceMode || false
+    });
+    player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
+    
+    // Apply orientation based on mode
+    if (player.inSpaceMode) {
+      // Space mode orientation
+      const spaceUp = new THREE.Vector3(0, 1, 0);
+      const spaceForward = new THREE.Vector3(
+        Math.sin(playerData.rot.y) * Math.cos(playerData.rot.x),
+        Math.sin(playerData.rot.x),
+        Math.cos(playerData.rot.y) * Math.cos(playerData.rot.x)
+      ).normalize();
+      
+      const spaceRight = new THREE.Vector3().crossVectors(spaceForward, spaceUp).normalize();
+      const correctedUp = new THREE.Vector3().crossVectors(spaceRight, spaceForward).normalize();
+      
+      const rotMatrix = new THREE.Matrix4().makeBasis(
+        spaceRight,
+        correctedUp,
+        spaceForward.clone().negate()
+      );
+      
+      player.mesh.quaternion.setFromRotationMatrix(rotMatrix);
+    } else {
+      // Ground mode orientation
+      const upVector = new THREE.Vector3(
+        playerData.contactNormal?.x || playerData.normal.x,
+        playerData.contactNormal?.y || playerData.normal.y, 
+        playerData.contactNormal?.z || playerData.normal.z
+      ).normalize();
+      
+      // Use helper function to align with surface
+      alignWithSurface(player.mesh, upVector, playerData.rot);
+    }
+  }
+  
+  // Clean up disconnected players
+  for (const [id, player] of playerMeshes.entries()) {
+    if (!seenIds.has(id)) {
+      scene.remove(player.mesh);
+      playerMeshes.delete(id);
+    }
+  }
+}
+
+// Box update function
 function updateBoxes() {
   if (!lastServerState.value) return;
   
@@ -300,67 +478,13 @@ function updateBoxes() {
   getMovingBoxes().forEach(box => updateBox(box, movingBoxMeshes, 0xe74c3c, 0x300000));
 }
 
-// Update other players - was missing
-function updateOtherPlayers() {
-  if (!lastServerState.value) return;
-  
-  const seenIds = new Set();
-  
-  for (const playerData of lastServerState.value.players) {
-    if (playerData.id === myId.value) continue;
-    seenIds.add(playerData.id);
-    
-    if (!playerMeshes.has(playerData.id)) {
-      const playerMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.5, 1, 4, 8),
-        new THREE.MeshStandardMaterial({ color: 0xff0000 })
-      );
-      scene.add(playerMesh);
-      playerMeshes.set(playerData.id, {
-        mesh: playerMesh,
-        pos: { ...playerData.pos },
-        rot: { ...playerData.rot },
-        normal: { ...playerData.normal },
-        falling: playerData.falling
-      });
-    }
-    
-    // Update player with concise property assignments
-    const player = playerMeshes.get(playerData.id);
-    Object.assign(player, {
-      pos: { ...playerData.pos }, 
-      normal: { ...playerData.normal },
-      falling: playerData.falling
-    });
-    player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
-    
-    // Apply orientation based on surface normal
-    const upVector = new THREE.Vector3(
-      playerData.contactNormal?.x || playerData.normal.x,
-      playerData.contactNormal?.y || playerData.normal.y, 
-      playerData.contactNormal?.z || playerData.normal.z
-    ).normalize();
-    
-    // Use helper function to align with surface
-    alignWithSurface(player.mesh, upVector, playerData.rot);
-  }
-  
-  // Clean up disconnected players
-  for (const [id, player] of playerMeshes.entries()) {
-    if (!seenIds.has(id)) {
-      scene.remove(player.mesh);
-      playerMeshes.delete(id);
-    }
-  }
-}
-
 // Updated animate function with better physics debugging
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
   const playerData = getMyPlayerData();
   if (debug.value && playerData) {
-    // Enhanced debugging with more physics details
+    // Enhanced debugging with more physics details and mode info
     const vel = playerData.vel || { x: 0, y: 0, z: 0 };
     const speed = Math.sqrt(vel.x**2 + vel.y**2 + vel.z**2);
     const height = Math.sqrt(
@@ -372,10 +496,9 @@ function animate() {
       pos: [playerData.pos.x.toFixed(1), playerData.pos.y.toFixed(1), playerData.pos.z.toFixed(1)],
       vel: [vel.x.toFixed(2), vel.y.toFixed(2), vel.z.toFixed(2)],
       speed: speed.toFixed(2),
-      falling: playerData.falling,
       height: height.toFixed(1),
       altitude: heightAboveSurface.toFixed(1),
-      ground: !playerData.falling ? "grounded" : "falling",
+      mode: playerData.inSpaceMode ? "SPACE" : "GROUND",
       normal: [
         playerData.normal.x.toFixed(2),
         playerData.normal.y.toFixed(2),
@@ -385,7 +508,7 @@ function animate() {
   }
   
   if (isPointerLocked.value && playerData) {
-    // Send input including camera rotation
+    // Send input including camera rotation and crouch (for down thrust)
     const normalVector = new THREE.Vector3(
       playerData.normal.x,
       playerData.normal.y,
@@ -501,6 +624,33 @@ html, body {
   height: 100vh;
   position: relative;
   background-color: #000;
+}
+
+.mode-indicator {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 5px;
+  text-align: center;
+  font-family: Arial, sans-serif;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mode-text {
+  font-size: 18px;
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.controls-hint {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-top: 5px;
 }
 
 .crosshair {
