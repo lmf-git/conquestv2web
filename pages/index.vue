@@ -54,7 +54,7 @@ onMounted(async () => {
   scene.background = new THREE.Color(0x000000)
   
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
-  camera.position.set(0, 15, 30)
+  camera.position.set(0, 0, 15)
   
   // Use the canvas ref directly
   renderer = new THREE.WebGLRenderer({ 
