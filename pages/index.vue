@@ -339,10 +339,10 @@ onMounted(async () => {
     const movementX = e.movementX || 0
     const movementY = e.movementY || 0
     
-    // Update camera pitch (up/down)
+    // Update camera pitch (up/down) - limit to prevent over-rotation
     cameraPitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraPitch - movementY * 0.002))
     
-    // Update yaw (left/right)
+    // Update yaw (left/right) - always update playerYaw in grounded state
     if (falling) {
       cameraYaw += movementX * 0.002
     } else {
@@ -401,50 +401,72 @@ onMounted(async () => {
     }, 50)
   })
 
+  let lastTime = null
+  
   function animate() {
     stats.begin()
     
-    // Apply gravity to dynamic objects
+    // Calculate deltaTime to make physics consistent regardless of framerate
+    const now = performance.now()
+    const deltaTime = Math.min((now - (lastTime || now)) / 1000, 0.1) // Cap at 0.1 to prevent huge jumps
+    lastTime = now
+    
+    // Apply gravity to dynamic objects - with improved stability
     world.forEachRigidBody(body => {
       if (body.isDynamic() && body !== playerBody) {
         const pos = body.translation()
-        const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
         
-        // Increase gravity strength substantially
-        const gravityStrength = 100.0  // Increased from 50
-        body.addForce({ x: dir.x * gravityStrength, y: dir.y * gravityStrength, z: dir.z * gravityStrength })
+        // Skip objects that are too far away or in invalid positions
+        const distSq = pos.x*pos.x + pos.y*pos.y + pos.z*pos.z
+        if (distSq < 0.01 || distSq > 10000) return
         
-        // Check if object is near or at the planet surface
-        const distToCenter = Math.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z)
+        const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z)
+        const distToCenter = dir.length()
+        dir.normalize()
+        
+        // Apply gravity with deltaTime scaling for consistency
+        const gravityStrength = 20.0 // Reduced from 100 for stability
+        const gravityForce = gravityStrength * deltaTime * 60 // Scale by 60 to maintain similar effect at 60fps
+        
+        body.addForce({ 
+          x: dir.x * gravityForce, 
+          y: dir.y * gravityForce, 
+          z: dir.z * gravityForce 
+        }, true) // Use wake = true to ensure object gets updated
+        
+        // Surface interaction with better stability 
         const distToSurface = distToCenter - planetRadius
-        
-        // Apply surface interaction forces
-        if (distToSurface < 2.0) {
-          // If very close to surface, apply stronger stabilizing force
-          if (distToSurface < 0.1) {
-            // Apply damping to help objects rest on the surface
+        if (distToSurface < 2.0 && distToSurface > -0.5) { // Prevent extreme force if somehow inside planet
+          // Apply graduated force based on distance
+          if (distToSurface < 0.3) {
+            // Damping factor that scales based on depth
+            const dampingFactor = Math.max(0, (0.3 - distToSurface) / 0.3) * 0.8
+            
+            // Get velocity and apply damping
             const vel = body.linvel()
             body.setLinvel({
-              x: vel.x * 0.8,
-              y: vel.y * 0.8, 
-              z: vel.z * 0.8
+              x: vel.x * (1 - dampingFactor),
+              y: vel.y * (1 - dampingFactor), 
+              z: vel.z * (1 - dampingFactor)
             }, true)
             
-            // Push outward if too close to prevent clipping
-            if (distToSurface < 0.05) {
-              const pushFactor = 100 / Math.max(0.01, distToSurface);
+            // Apply repulsive force scaled by deltaTime
+            if (distToSurface < 0.1) {
+              // Use smoother push factor with sane upper limit
+              const pushFactor = Math.min(50, 5 / Math.max(0.05, distToSurface)) * deltaTime * 60
+              
               body.addForce({ 
                 x: dir.x * -pushFactor, 
                 y: dir.y * -pushFactor, 
                 z: dir.z * -pushFactor 
-              })
+              }, true)
             }
           }
         }
       }
     })
     
-    // Step the physics world - IMPORTANT: Add this line to advance the physics simulation!
+    // Step the physics world with fixed timestep for stability
     world.step()
     
     // Get player position
@@ -677,22 +699,24 @@ onMounted(async () => {
       // Update player mesh position to match physics body
       playerMesh.position.copy(adjustedPlayerPos)
       
-      // Improved camera control system
-      // Get right vector (perpendicular to up and forward) for pitch rotation
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
-      const right = new THREE.Vector3().crossVectors(up, forward).normalize()
+      // FIXED: Improved camera control system
+      // Get the player's forward and right vectors based on yaw rotation
+      const forwardFlat = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
+      const rightFlat = new THREE.Vector3().crossVectors(up, forwardFlat).normalize()
       
-      // Set up camera with proper look-at orientation based on player orientation
-      camera.quaternion.copy(playerQuat)
-      
-      // Apply pitch rotation around the right axis, which is perpendicular to surface normal
-      camera.rotateOnAxis(right, cameraPitch)
-      
-      // Position camera at player's head position
+      // Position camera at player's head
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerQuat)
       )
       camera.position.copy(headPos)
+      
+      // Set camera base orientation to match player's orientation
+      camera.quaternion.copy(playerQuat)
+      
+      // Then apply pitch rotation (up/down look) around the right axis
+      // This keeps the camera level with the horizon when looking straight
+      // but allows looking up and down independently of player rotation
+      camera.rotateOnAxis(rightFlat, cameraPitch)
     } else {
       // In air - handle free orientation
       const freefallQuat = new THREE.Quaternion().setFromEuler(
