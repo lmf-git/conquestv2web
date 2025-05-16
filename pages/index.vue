@@ -12,14 +12,14 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 
 // Constants
 const GRAVITY_STRENGTH = 50
-const SPHERE_RADIUS = 2
-const CAPSULE_RADIUS = 0.5
-const CAPSULE_HEIGHT = 2
+const PLANET_RADIUS = 2
+const PLAYER_RADIUS = 0.5
+const PLAYER_HEIGHT = 2
 
 // Keep only essential objects as variables
 let renderer, scene, camera, controls
-let physicsWorld, sphereBody, capsuleBody
-let sphereMesh, capsuleMesh
+let physicsWorld, planetBody, playerBody
+let planetMesh, playerMesh
 let animationFrameId
 
 onMounted(async () => {
@@ -65,69 +65,60 @@ onMounted(async () => {
   const gravity = { x: 0.0, y: 0.0, z: 0.0 } // We'll handle gravity manually
   physicsWorld = new RAPIER.World(gravity)
   
-  // Create a sphere (attractor)
-  const sphereRigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
-  sphereBody = physicsWorld.createRigidBody(sphereRigidBodyDesc)
+  // Create a planet (gravity attractor)
+  const planetRigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
+  planetBody = physicsWorld.createRigidBody(planetRigidBodyDesc)
   
-  const sphereColliderDesc = RAPIER.ColliderDesc.ball(SPHERE_RADIUS)
-  physicsWorld.createCollider(sphereColliderDesc, sphereBody)
+  const planetColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS)
+  physicsWorld.createCollider(planetColliderDesc, planetBody)
   
-  // Create sphere mesh
-  const sphereGeometry = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 32)
-  const sphereMaterial = new THREE.MeshStandardMaterial({ color: 0x1565c0 })
-  sphereMesh = new THREE.Mesh(sphereGeometry, sphereMaterial)
-  scene.add(sphereMesh)
+  // Create planet mesh
+  const planetGeometry = new THREE.SphereGeometry(PLANET_RADIUS, 32, 32)
+  const planetMaterial = new THREE.MeshStandardMaterial({ color: 0x1565c0 })
+  planetMesh = new THREE.Mesh(planetGeometry, planetMaterial)
+  scene.add(planetMesh)
   
-  // Create a capsule (will be attracted to the sphere)
-  const capsuleRigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
+  // Create a player (will be attracted to the planet)
+  const playerRigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
   
-  // Random position above the sphere
+  // Random position above the planet
   const randomX = (Math.random() - 0.5) * 20
   const randomZ = (Math.random() - 0.5) * 20
-  capsuleRigidBodyDesc.setTranslation(randomX, 20, randomZ)
+  playerRigidBodyDesc.setTranslation(randomX, 20, randomZ)
   
-  capsuleBody = physicsWorld.createRigidBody(capsuleRigidBodyDesc)
+  playerBody = physicsWorld.createRigidBody(playerRigidBodyDesc)
   
-  const capsuleColliderDesc = RAPIER.ColliderDesc.capsule(CAPSULE_HEIGHT / 2, CAPSULE_RADIUS)
-  physicsWorld.createCollider(capsuleColliderDesc, capsuleBody)
+  const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS)
+  physicsWorld.createCollider(playerColliderDesc, playerBody)
   
-  // Create capsule mesh
-  const capsuleGeometry = new THREE.CapsuleGeometry(CAPSULE_RADIUS, CAPSULE_HEIGHT, 20, 20)
-  const capsuleMaterial = new THREE.MeshStandardMaterial({ color: 0xe53935 })
-  capsuleMesh = new THREE.Mesh(capsuleGeometry, capsuleMaterial)
-  scene.add(capsuleMesh)
+  // Create player mesh
+  const playerGeometry = new THREE.CapsuleGeometry(PLAYER_RADIUS, PLAYER_HEIGHT, 20, 20)
+  const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xe53935 })
+  playerMesh = new THREE.Mesh(playerGeometry, playerMaterial)
+  scene.add(playerMesh)
   
   // Start animation loop
   animate()
 })
 
 onBeforeUnmount(() => {
-  // Clean up resources
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-  }
-  
-  if (renderer) {
-    renderer.dispose()
-  }
-  
-  if (controls) {
-    controls.dispose()
-  }
+  if (animationFrameId) cancelAnimationFrame(animationFrameId);
+  if (renderer) renderer.dispose()
+  if (controls) controls.dispose()
 })
 
-function applyGravityForce() {
-  if (!capsuleBody || !sphereBody) return
+function applyPlanetGravity() {
+  if (!playerBody || !planetBody) return
   
   // Get positions
-  const capsulePos = capsuleBody.translation()
-  const spherePos = sphereBody.translation()
+  const playerPos = playerBody.translation()
+  const planetPos = planetBody.translation()
   
-  // Calculate direction vector from capsule to sphere
+  // Calculate direction vector from player to planet
   const direction = {
-    x: spherePos.x - capsulePos.x,
-    y: spherePos.y - capsulePos.y,
-    z: spherePos.z - capsulePos.z
+    x: planetPos.x - playerPos.x,
+    y: planetPos.y - playerPos.y,
+    z: planetPos.z - playerPos.z
   }
   
   // Calculate distance
@@ -146,8 +137,8 @@ function applyGravityForce() {
     // Force is proportional to 1/distance²
     const forceMagnitude = GRAVITY_STRENGTH / (distance * distance)
     
-    // Apply force using Rapier's API correctly
-    capsuleBody.applyImpulse(
+    // Apply planet's gravitational pull on the player
+    playerBody.applyImpulse(
       { x: direction.x * forceMagnitude * 0.01, 
         y: direction.y * forceMagnitude * 0.01, 
         z: direction.z * forceMagnitude * 0.01 },
@@ -159,24 +150,24 @@ function applyGravityForce() {
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
   
-  // Apply gravity between sphere and capsule
-  applyGravityForce()
+  // Apply gravity between planet and player
+  applyPlanetGravity()
   
   // Step the physics world
   physicsWorld.step()
   
   // Update mesh positions based on physics bodies
-  if (sphereBody && sphereMesh) {
-    const position = sphereBody.translation()
-    sphereMesh.position.set(position.x, position.y, position.z)
+  if (planetBody && planetMesh) {
+    const position = planetBody.translation()
+    planetMesh.position.set(position.x, position.y, position.z)
   }
   
-  if (capsuleBody && capsuleMesh) {
-    const position = capsuleBody.translation()
-    const rotation = capsuleBody.rotation()
+  if (playerBody && playerMesh) {
+    const position = playerBody.translation()
+    const rotation = playerBody.rotation()
     
-    capsuleMesh.position.set(position.x, position.y, position.z)
-    capsuleMesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
+    playerMesh.position.set(position.x, position.y, position.z)
+    playerMesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
   }
   
   controls.update()
@@ -185,12 +176,12 @@ function animate() {
 </script>
 
 <style scoped>
-#scene-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-}
+  #scene-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
 </style>
