@@ -1,8 +1,9 @@
 <template>
   <div class="game-wrapper">
-    <div ref="container" class="game-container">
-      <div class="crosshair"></div>
+    <div ref="container" class="game-container" @click="handleClick">
+      <div class="crosshair" v-if="isPointerLocked"></div>
       <div v-if="!isPointerLocked" class="click-prompt">Click to play</div>
+      <div v-if="debug" class="debug-info">{{ debugInfo }}</div>
     </div>
   </div>
 </template>
@@ -27,6 +28,8 @@ const isConnected = ref(false);
 const isInitialized = ref(false);
 const isPointerLocked = ref(false);
 const container = ref(null);
+const debug = ref(process.env.NODE_ENV === 'development');
+const debugInfo = ref('');
 
 // Three.js variables with simplified initialization
 let scene, camera, renderer, animationFrameId;
@@ -37,6 +40,15 @@ const movingBoxMeshes = new Map();
 let localPlayerObject, localPlayerMesh;
 let lastNormalVector = new THREE.Vector3(0, 1, 0);
 
+// Simple click handler that directly locks pointer
+const handleClick = () => {
+  if (!isPointerLocked.value && container.value) {
+    // Simple direct call to request pointer lock
+    container.value.requestPointerLock();
+    debugInfo.value = "Requested pointer lock";
+  }
+};
+
 // Server connection with arrow functions
 const connectToServer = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -45,7 +57,6 @@ const connectToServer = () => {
   ws.value = new WebSocket(`${protocol}//${host}`);
   
   ws.value.onopen = () => {
-    console.log('Connected to server');
     isConnected.value = true;
   };
   
@@ -69,14 +80,16 @@ const connectToServer = () => {
 };
 
 // Simplified input sender
-const sendInput = (cameraRotation, normalVector) => 
-  ws.value?.readyState === WebSocket.OPEN && 
+const sendInput = (cameraRotation, normalVector) => {
+  if (ws.value?.readyState === WebSocket.OPEN) {
     ws.value.send(JSON.stringify({
       type: 'input',
       keys: { ...keys.value },
       rotation: { ...cameraRotation },
       normal: normalVector
     }));
+  }
+}; 
 
 // Getter functions using optional chaining and arrow syntax
 const getMyPlayerData = () => lastServerState.value?.players.find(p => p.id === myId.value) || null;
@@ -85,46 +98,92 @@ const getMovingBoxes = () => lastServerState.value?.movingBoxes || [];
 
 // Event handlers with concise syntax
 const setupEventListeners = () => {
+  // Simplified to just what we need
   document.addEventListener('pointerlockchange', handlePointerLockChange);
+  document.addEventListener('mozpointerlockchange', handlePointerLockChange);
+  document.addEventListener('webkitpointerlockchange', handlePointerLockChange);
   document.addEventListener('mousemove', handleMouseMove);
   window.addEventListener('resize', handleResize);
   window.addEventListener('keydown', handleKeyDown);
   window.addEventListener('keyup', handleKeyUp);
 };
 
-const requestPointerLock = () => 
-  (container.value.requestPointerLock = container.value.requestPointerLock || 
-    container.value.mozRequestPointerLock) && container.value.requestPointerLock();
+// Simplified pointer lock change handler
+const handlePointerLockChange = () => {
+  const lockElement = document.pointerLockElement || 
+                      document.mozPointerLockElement || 
+                      document.webkitPointerLockElement;
+                      
+  isPointerLocked.value = lockElement === container.value;
+  debugInfo.value = isPointerLocked.value ? "Pointer locked" : "Pointer unlocked";
+};
 
-const handlePointerLockChange = () => 
-  isPointerLocked.value = document.pointerLockElement === container.value;
+// Mouse movement handler
+const handleMouseMove = (event) => {
+  if (!isPointerLocked.value) return;
+  
+  // Apply mouse movement to camera rotation
+  const { movementX, movementY } = event;
+  cameraRotation.x -= movementY * 0.002; // Look up/down
+  cameraRotation.y -= movementX * 0.002; // Look left/right
+  
+  // Clamp vertical rotation to prevent flipping
+  cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
+  
+  if (debug.value) {
+    debugInfo.value = `Camera rotation: ${cameraRotation.x.toFixed(2)}, ${cameraRotation.y.toFixed(2)}`;
+  }
+};
 
+// Window resize handler
 const handleResize = () => {
+  if (!camera || !renderer) return;
+  
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 };
 
-const handleKeyDown = e => keys.value.hasOwnProperty(e.key.toLowerCase()) && (keys.value[e.key.toLowerCase()] = true);
-const handleKeyUp = e => keys.value.hasOwnProperty(e.key.toLowerCase()) && (keys.value[e.key.toLowerCase()] = false);
-
-const handleMouseMove = ({ movementX, movementY }) => {
-  if (!isPointerLocked.value) return;
-  
-  cameraRotation.x -= movementY * 0.002;
-  cameraRotation.y -= movementX * 0.002;
-  cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
+// Keyboard event handlers
+const handleKeyDown = (event) => {
+  const key = event.key.toLowerCase();
+  if (keys.value.hasOwnProperty(key)) {
+    keys.value[key] = true;
+  }
 };
 
-// Updated Three.js rendering functions
+const handleKeyUp = (event) => {
+  const key = event.key.toLowerCase();
+  if (keys.value.hasOwnProperty(key)) {
+    keys.value[key] = false;
+  }
+};
+
+// Camera orientation function - was missing
 function updateCameraOrientation() {
   const playerData = getMyPlayerData();
   if (!playerData) return;
   
-  // Set position
-  localPlayerObject.position.set(playerData.pos.x, playerData.pos.y, playerData.pos.z);
+  // Smooth position updates from physics
+  const lerpFactor = 0.3; // Adjust for balance between smoothness and responsiveness
   
-  // Get current normal once
+  // Get current position from mesh
+  const currentPosition = localPlayerObject.position;
+  
+  // Calculate lerped position for smoother movement
+  const targetPosition = new THREE.Vector3(
+    playerData.pos.x, 
+    playerData.pos.y, 
+    playerData.pos.z
+  );
+  
+  // Apply smoothing only when not too far (prevents slow catch-up after teleports)
+  const distance = currentPosition.distanceTo(targetPosition);
+  const actualLerpFactor = distance > 5 ? 1.0 : lerpFactor;
+  
+  currentPosition.lerp(targetPosition, actualLerpFactor);
+  
+  // Get current normal
   const currentNormal = new THREE.Vector3(
     playerData.contactNormal?.x || playerData.normal.x,
     playerData.contactNormal?.y || playerData.normal.y, 
@@ -134,6 +193,7 @@ function updateCameraOrientation() {
   lastNormalVector.copy(currentNormal);
   const cameraHolder = camera.parent;
   
+  // Apply orientation based on player state
   if (!playerData.falling) {
     // Combined orientation logic for grounded player
     const baseQuat = new THREE.Quaternion().setFromUnitVectors(
@@ -173,11 +233,11 @@ function updateCameraOrientation() {
   }
 }
 
-// Simplified box update with more concise code
+// Box update function - was missing
 function updateBoxes() {
   if (!lastServerState.value) return;
   
-  // Generic box updater
+  // Generic box updater with physics-based orientation
   const updateBox = (boxData, meshMap, color, emissive = null) => {
     if (!meshMap.has(boxData.id)) {
       const material = new THREE.MeshStandardMaterial({ 
@@ -185,7 +245,7 @@ function updateBoxes() {
       });
       
       if (emissive) {
-        material.emissive = emissive;
+        material.emissive = new THREE.Color(emissive);
         material.emissiveIntensity = 0.2;
       }
       
@@ -198,13 +258,41 @@ function updateBoxes() {
     }
     
     const box = meshMap.get(boxData.id);
+    const previousPos = box.data.position || boxData.position;
     box.data = { ...boxData };
-    box.mesh.position.set(boxData.position.x, boxData.position.y, boxData.position.z);
     
-    box.mesh.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0), 
-      new THREE.Vector3(boxData.position.x, boxData.position.y, boxData.position.z).normalize()
+    // Simple interpolation for smoother movement
+    const lerpFactor = 0.3; // Adjust for smoother or more responsive movement
+    const lerpedPosition = {
+      x: previousPos.x + (boxData.position.x - previousPos.x) * lerpFactor,
+      y: previousPos.y + (boxData.position.y - previousPos.y) * lerpFactor,
+      z: previousPos.z + (boxData.position.z - previousPos.z) * lerpFactor
+    };
+    
+    box.mesh.position.set(lerpedPosition.x, lerpedPosition.y, lerpedPosition.z);
+    
+    // Apply orientation based on surface normal for boxes on planet
+    const normal = calculateNormal(boxData.position);
+    
+    // Create proper orientation matrix
+    const up = new THREE.Vector3(0, 1, 0);
+    const boxNormal = new THREE.Vector3(normal.x, normal.y, normal.z);
+    
+    // Use lookAt for simple alignment to normal
+    const alignMatrix = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const targetPos = new THREE.Vector3().addVectors(
+      pos, 
+      new THREE.Vector3(normal.x, normal.y, normal.z)
     );
+    alignMatrix.lookAt(pos, targetPos, up);
+    
+    // Apply any custom rotation if provided (for the main rotating box)
+    if (boxData.rotation) {
+      box.mesh.rotation.set(boxData.rotation.x, boxData.rotation.y, boxData.rotation.z);
+    } else {
+      box.mesh.quaternion.setFromRotationMatrix(alignMatrix);
+    }
   };
   
   // Apply to box collections
@@ -212,7 +300,7 @@ function updateBoxes() {
   getMovingBoxes().forEach(box => updateBox(box, movingBoxMeshes, 0xe74c3c, 0x300000));
 }
 
-// Optimize other player updates
+// Update other players - was missing
 function updateOtherPlayers() {
   if (!lastServerState.value) return;
   
@@ -277,12 +365,20 @@ function updateOtherPlayers() {
   }
 }
 
-// Optimized animation loop
+// Updated animate function to add debugging info
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
-  if (isPointerLocked.value && getMyPlayerData()) {
-    const playerData = getMyPlayerData();
+  const playerData = getMyPlayerData();
+  if (debug.value && playerData) {
+    debugInfo.value = `Player: ${JSON.stringify({
+      pos: [playerData.pos.x.toFixed(1), playerData.pos.y.toFixed(1), playerData.pos.z.toFixed(1)],
+      locked: isPointerLocked.value,
+      falling: playerData.falling
+    })}`;
+  }
+  
+  if (isPointerLocked.value && playerData) {
     const normalVector = playerData && !playerData.falling 
       ? new THREE.Vector3(
           playerData.contactNormal?.x || playerData.normal.x,
@@ -320,7 +416,7 @@ onMounted(() => {
   renderer.setPixelRatio(window.devicePixelRatio);
   container.value.appendChild(renderer.domElement);
   
-  // Add scene elements with chaining
+  // Add scene elements
   scene.add(new THREE.AmbientLight(0x404040))
        .add(new THREE.DirectionalLight(0xffffff, 1).translateY(1))
        .add(new THREE.Mesh(
@@ -355,15 +451,22 @@ onMounted(() => {
   localPlayerObject.position.set(0, planetRadius.value + 50, 0);
   scene.add(localPlayerObject);
   
-  // Events and animation
-  container.value.addEventListener('click', requestPointerLock);
+  // Register event listeners - directly call setupEventListeners
   setupEventListeners();
   animate();
+  
+  // Check pointer lock API support
+  if (!('pointerLockElement' in document) && 
+      !('mozPointerLockElement' in document) && 
+      !('webkitPointerLockElement' in document)) {
+    debugInfo.value = "Pointer lock API not supported";
+  }
 });
 
 onUnmounted(() => {
   cancelAnimationFrame(animationFrameId);
   document.removeEventListener('pointerlockchange', handlePointerLockChange);
+  document.removeEventListener('mozpointerlockchange', handlePointerLockChange);
   document.removeEventListener('mousemove', handleMouseMove);
   window.removeEventListener('resize', handleResize);
   window.removeEventListener('keydown', handleKeyDown);
@@ -416,5 +519,20 @@ html, body {
   font-size: 24px;
   cursor: pointer;
   user-select: none;
+}
+
+.debug-info {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: white;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 500px;
+  white-space: pre-wrap;
+  z-index: 100;
 }
 </style>
