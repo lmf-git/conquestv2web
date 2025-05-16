@@ -1,14 +1,11 @@
 <template>
-  <div>
-    <div id="scene-container"></div>
-  </div>
+  <div id="scene-container"></div>
 </template>
 
 <script setup>
 import { onMounted, onBeforeUnmount } from 'vue'
 import * as THREE from 'three'
 import * as RAPIER from '@dimforge/rapier3d-compat'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 
 // Constants
 const GRAVITY_STRENGTH = 50
@@ -17,7 +14,7 @@ const PLAYER_RADIUS = 0.5
 const PLAYER_HEIGHT = 2
 
 // Keep only essential objects as variables
-let renderer, scene, camera, controls
+let renderer, scene, camera
 let physicsWorld, planetBody, playerBody
 let planetMesh, playerMesh
 let animationFrameId
@@ -46,9 +43,6 @@ onMounted(async () => {
   renderer.setPixelRatio(window.devicePixelRatio)
   container.appendChild(renderer.domElement)
   
-  // Add orbit controls
-  controls = new OrbitControls(camera, renderer.domElement)
-  
   // Add lights
   const ambientLight = new THREE.AmbientLight(0x404040)
   scene.add(ambientLight)
@@ -57,7 +51,6 @@ onMounted(async () => {
   directionalLight.position.set(10, 20, 10)
   scene.add(directionalLight)
   
-  // Add grid helper
   const gridHelper = new THREE.GridHelper(50, 50)
   scene.add(gridHelper)
   
@@ -104,7 +97,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (animationFrameId) cancelAnimationFrame(animationFrameId);
   if (renderer) renderer.dispose()
-  if (controls) controls.dispose()
 })
 
 function applyPlanetGravity() {
@@ -170,7 +162,6 @@ function animate() {
     playerMesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
   }
   
-  controls.update()
   renderer.render(scene, camera)
 }
 </script>
