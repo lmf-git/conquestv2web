@@ -292,20 +292,29 @@ function applyPlanetGravity() {
       const playerPos = playerBodies[i].translation()
       const planetPos = planetBody.translation()
       
-      // Calculate direction from player to planet (gravity direction)
-      const direction = new THREE.Vector3(
+      // Direction FROM player TO planet (correct for gravity calculation)
+      // This should pull the player toward the planet, not push away
+      const gravityDirection = new THREE.Vector3(
         planetPos.x - playerPos.x,
         planetPos.y - playerPos.y,
         planetPos.z - playerPos.z
       )
       
-      const distance = direction.length()
+      // For surface normal (correct for landing alignment)
+      // Direction FROM planet TO player
+      const normalDirection = new THREE.Vector3(
+        playerPos.x - planetPos.x,
+        playerPos.y - planetPos.y,
+        playerPos.z - planetPos.z
+      )
+      
+      const distance = gravityDirection.length()  // Distance is the same either way
       
       // Check if we're close enough to land directly on the planet
-      // This helps prevent tunneling through the planet at high speeds
       if (distance <= PLANET_RADIUS + PLAYER_HEIGHT/2 + 0.1) {
         // We're close enough to the planet surface to land
-        const normal = direction.clone().normalize();
+        // Use the normalDirection as the surface normal (points outward from planet)
+        const normal = normalDirection.clone().normalize();
         landPlayerOnSurface(i, planetBody, physicsWorld.getCollider(planetBody.collider(0)), normal);
         alignPlayerWithNormal(i, normal);
         playerFallingStates[i] = false;
@@ -315,13 +324,13 @@ function applyPlanetGravity() {
       if (distance === 0) continue
       
       // Normalize and scale by gravity
-      direction.normalize()
+      gravityDirection.normalize()
       const gravitationalAcceleration = GRAVITY_STRENGTH / (distance * distance) * 0.0005
       
-      // Update velocity using gravity
-      playerVelocities[i].x += direction.x * gravitationalAcceleration
-      playerVelocities[i].y += direction.y * gravitationalAcceleration
-      playerVelocities[i].z += direction.z * gravitationalAcceleration
+      // Update velocity using gravity - pulling TOWARD the planet
+      playerVelocities[i].x += gravityDirection.x * gravitationalAcceleration
+      playerVelocities[i].y += gravityDirection.y * gravitationalAcceleration
+      playerVelocities[i].z += gravityDirection.z * gravitationalAcceleration
       
       // Limit terminal velocity to prevent tunneling
       const speed = playerVelocities[i].length();
@@ -350,11 +359,12 @@ function applyPlanetGravity() {
   }
 }
 
-// Helper function to apply gravity to a specific object
+// Update this function too to pull objects toward the planet
 function applyGravityToObject(objectBody, attractor) {
   const objectPos = objectBody.translation()
   const attractorPos = attractor.translation()
   
+  // Direction FROM object TO attractor (for correct gravity)
   const direction = new THREE.Vector3(
     attractorPos.x - objectPos.x,
     attractorPos.y - objectPos.y,
@@ -407,14 +417,15 @@ function handleCollisions() {
         const otherBody = physicsWorld.getRigidBody(otherCollider.parent())
         const otherPos = otherBody.translation()
         
-        // Simple normal calculation (from other object center to player)
+        // Fix the normal calculation - it should point FROM planet TO player
+        // for proper alignment on the surface
         const normal = new THREE.Vector3(
           playerPos.x - otherPos.x,
           playerPos.y - otherPos.y,
           playerPos.z - otherPos.z
         ).normalize()
         
-        // Land the player on the surface
+        // Land the player on the surface 
         landPlayerOnSurface(playerIndex, otherBody, otherCollider, normal)
         
         // Align player with surface normal
