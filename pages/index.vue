@@ -516,17 +516,26 @@ onMounted(async () => {
       
       // Handle jumping
       if (keys['Space']) {
+        // Calculate the contact point (feet position)
+        const contactPoint = playerPosition.clone().normalize().multiplyScalar(planetRadius)
+        
+        // Set to falling state
         falling = true
+        
+        // Cache the current camera orientation before switching to falling mode
+        cameraYaw = playerYaw
         
         // Switch to dynamic body for physics-based movement
         playerBody.setBodyType(RAPIER.RigidBodyType.Dynamic)
         playerBody.setLinearDamping(playerDynamicSettings.linearDamping)
         playerBody.setAngularDamping(playerDynamicSettings.angularDamping)
         
-        // Apply jump impulse along the surface normal
+        // Apply jump impulse directly away from contact point
         const jumpForce = 8.0
-        playerVelocity = normalToPlanet.clone().negate().multiplyScalar(jumpForce)
+        const jumpDir = playerPosition.clone().sub(contactPoint).normalize()
+        playerVelocity = jumpDir.multiplyScalar(jumpForce)
         
+        // Apply the impulse to the body
         playerBody.setLinvel({
           x: playerVelocity.x,
           y: playerVelocity.y,
@@ -553,7 +562,7 @@ onMounted(async () => {
       // Combine: first align with surface, then apply yaw
       const playerQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat)
       
-      // Apply the rotation
+      // Apply the rotation to player mesh
       playerMesh.quaternion.copy(playerQuat)
       
       // Update physics body rotation
@@ -564,21 +573,28 @@ onMounted(async () => {
         w: playerQuat.w
       })
       
-      // Calculate local axes for camera positioning
+      // Calculate the exact player's feet position (contact point with planet)
+      const feetPosition = playerMesh.position.clone().sub(
+        up.clone().multiplyScalar(playerHeight/2)
+      )
+      
+      // Find forward and right directions based on player orientation
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat)
       
-      // Position camera at player's head
-      const headPos = playerMesh.position.clone().add(
-        cameraOffset.clone().applyQuaternion(playerQuat)
-      )
-      camera.position.copy(headPos)
+      // Position camera relative to feet position, not the player's center
+      // First position at feet
+      camera.position.copy(feetPosition);
+      // Then move up to head height
+      camera.position.add(up.clone().multiplyScalar(playerHeight));
+      // Then add the camera offset
+      camera.position.add(cameraOffset.clone().applyQuaternion(playerQuat));
       
-      // Set camera orientation - start with player orientation
-      camera.quaternion.copy(playerQuat)
+      // Set base camera orientation aligned with player
+      camera.quaternion.copy(playerQuat);
       
-      // Add pitch for looking up/down
-      camera.rotateOnAxis(right, cameraPitch)
+      // Apply pitch rotation around the right axis
+      camera.rotateOnAxis(right, -cameraPitch);
     } else {
       // In air - handle free orientation
       const freefallQuat = new THREE.Quaternion().setFromEuler(
