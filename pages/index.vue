@@ -43,20 +43,13 @@ onMounted(async () => {
   renderer.setPixelRatio(window.devicePixelRatio)
   container.appendChild(renderer.domElement)
   
-  // Add lights
-  const ambientLight = new THREE.AmbientLight(0x404040)
-  scene.add(ambientLight)
+  scene.add(new THREE.AmbientLight(0x404040))
   
   const directionalLight = new THREE.DirectionalLight(0xffffff, 1)
   directionalLight.position.set(10, 20, 10)
   scene.add(directionalLight)
   
-  const gridHelper = new THREE.GridHelper(50, 50)
-  scene.add(gridHelper)
-  
-  // Create physics world
-  const gravity = { x: 0.0, y: 0.0, z: 0.0 } // We'll handle gravity manually
-  physicsWorld = new RAPIER.World(gravity)
+  physicsWorld = new RAPIER.World({ x: 0.0, y: 0.0, z: 0.0 })
   
   // Create a planet (gravity attractor)
   const planetRigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
@@ -75,9 +68,7 @@ onMounted(async () => {
   const playerRigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
   
   // Random position above the planet
-  const randomX = (Math.random() - 0.5) * 20
-  const randomZ = (Math.random() - 0.5) * 20
-  playerRigidBodyDesc.setTranslation(randomX, 20, randomZ)
+  playerRigidBodyDesc.setTranslation((Math.random() - 0.5) * 20, 20, (Math.random() - 0.5) * 20);
   
   playerBody = physicsWorld.createRigidBody(playerRigidBodyDesc)
   
@@ -102,41 +93,33 @@ onBeforeUnmount(() => {
 function applyPlanetGravity() {
   if (!playerBody || !planetBody) return
   
-  // Get positions
+  // Use Three.js Vector3 for cleaner vector math
   const playerPos = playerBody.translation()
   const planetPos = planetBody.translation()
   
-  // Calculate direction vector from player to planet
-  const direction = {
-    x: planetPos.x - playerPos.x,
-    y: planetPos.y - playerPos.y,
-    z: planetPos.z - playerPos.z
-  }
-  
-  // Calculate distance
-  const distance = Math.sqrt(
-    direction.x * direction.x +
-    direction.y * direction.y +
-    direction.z * direction.z
+  // Create direction vector and calculate force in fewer steps
+  const direction = new THREE.Vector3(
+    planetPos.x - playerPos.x,
+    planetPos.y - playerPos.y,
+    planetPos.z - playerPos.z
   )
   
-  // Normalize direction
-  if (distance > 0) {
-    direction.x /= distance
-    direction.y /= distance
-    direction.z /= distance
-    
-    // Force is proportional to 1/distance²
-    const forceMagnitude = GRAVITY_STRENGTH / (distance * distance)
-    
-    // Apply planet's gravitational pull on the player
-    playerBody.applyImpulse(
-      { x: direction.x * forceMagnitude * 0.01, 
-        y: direction.y * forceMagnitude * 0.01, 
-        z: direction.z * forceMagnitude * 0.01 },
-      true
-    )
-  }
+  const distance = direction.length()
+  if (distance === 0) return
+  
+  // Normalize and calculate force in one go
+  direction.normalize()
+  const forceMagnitude = GRAVITY_STRENGTH / (distance * distance) * 0.01
+  
+  // Apply scaled force vector directly
+  playerBody.applyImpulse(
+    { 
+      x: direction.x * forceMagnitude,
+      y: direction.y * forceMagnitude, 
+      z: direction.z * forceMagnitude 
+    },
+    true
+  )
 }
 
 function animate() {
