@@ -9,8 +9,8 @@ import * as RAPIER from '@dimforge/rapier3d-compat'
 
 const GRAVITY_STRENGTH = 50
 const PLANET_RADIUS = 2
-const PLAYER_RADIUS = 0.5
-const PLAYER_HEIGHT = 2
+const PLAYER_RADIUS = 0.2  // Reduced from 0.5
+const PLAYER_HEIGHT = 0.8  // Reduced from 2
 const NUM_PLAYERS = 3  // We'll create exactly 3 players
 const NUM_RANDOM_OBJECTS = 8  // Number of additional objects to create
 // Added friction constants
@@ -115,7 +115,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', handleKeyUp)
 })
 
-// Function to create players (now kinematic capsules)
+// Function to create players - update to disable sensor mode for physical collisions
 function createPlayers(count) {
   const playerColors = [0xe53935, 0x43A047, 0x1E88E5]
   
@@ -146,9 +146,9 @@ function createPlayers(count) {
     
     const playerBody = physicsWorld.createRigidBody(playerRigidBodyDesc)
     
-    // Create collider with sensor enabled for contact detection
+    // Create collider - remove sensor flag to enable physical collisions
     const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS)
-    playerColliderDesc.setSensor(true)  // Make it a sensor to detect contacts
+    // No longer set as sensor: playerColliderDesc.setSensor(true)
     const collider = physicsWorld.createCollider(playerColliderDesc, playerBody)
     
     // Instead of using setUserData, track the collider handle with our map
@@ -326,8 +326,8 @@ function applyPlanetGravity() {
       
       const distance = gravityDirection.length()  // Distance is the same either way
       
-      // Check if we're close enough to land directly on the planet
-      if (distance <= PLANET_RADIUS + PLAYER_HEIGHT/2 + 0.1) {
+      // Check if we're close enough to land directly on the planet - fix calculation
+      if (distance <= PLANET_RADIUS + PLAYER_RADIUS + 0.1) {
         // We're close enough to the planet surface to land
         // Use the normalDirection as the surface normal (points outward from planet)
         const normal = normalDirection.clone().normalize();
@@ -461,34 +461,26 @@ function landPlayerOnSurface(playerIndex, surfaceBody, surfaceCollider, normal) 
   const playerBody = playerBodies[playerIndex]
   const surfacePos = surfaceBody.translation()
   
-  // Determine the type of collider to calculate offset
   let offsetDistance = 0;
   
-  // Get surface collider shape type
   if (surfaceCollider.shapeType() === RAPIER.ShapeType.Ball) {
-    // For spheres (like the planet)
-    const radius = surfaceCollider.radius();  // Use radius() for ball colliders
-    offsetDistance = radius + PLAYER_HEIGHT / 2;  // Position player so its bottom is on the surface
+    const radius = surfaceCollider.radius();
+    // Calculate precise height - include full player height, not just half
+    offsetDistance = radius + PLAYER_RADIUS;  // Bottom of capsule should be on surface
   } 
   else if (surfaceCollider.shapeType() === RAPIER.ShapeType.Cuboid) {
-    // For cubes (like the surface platforms)
     const halfExtents = surfaceCollider.halfExtents();
-    const halfHeight = halfExtents.y;  // Y is usually height
-    offsetDistance = halfHeight + PLAYER_HEIGHT / 2;
-  }
-  else {
-    // Default offset if shape type is unknown
-    offsetDistance = PLAYER_HEIGHT / 2 + 0.5; // Add a small buffer
+    const halfHeight = halfExtents.y;
+    // Calculate precise height for cuboid
+    offsetDistance = halfHeight + PLAYER_RADIUS;
   }
   
-  // Calculate new position: surface position + normal * offset
   const newPosition = {
     x: surfacePos.x + normal.x * offsetDistance,
     y: surfacePos.y + normal.y * offsetDistance,
     z: surfacePos.z + normal.z * offsetDistance
   };
   
-  // Set player position
   playerBody.setTranslation(newPosition);
 }
 
@@ -564,87 +556,115 @@ function movePlayer() {
     
     // Apply rotation to the movement direction
     moveDirection.applyQuaternion(playerQuaternion);
+
+    // Apply movement
+    const playerPos = playerBody.translation();
+    const newPosition = {
+      x: playerPos.x + moveDirection.x * MOVE_SPEED,
+      y: playerPos.y + moveDirection.y * MOVE_SPEED,
+      z: playerPos.z + moveDirection.z * MOVE_SPEED
+    };
+    
+    playerBody.setTranslation(newPosition);
   } else {
-    // When landed, move along the surface
-    // We need to transform the movement direction to be tangential to the surface
-    // Get player position and planet position
+    // When landed, handle movement on curved surface
     const playerPos = playerBody.translation();
     const planetPos = planetBody.translation();
     
-    // Calculate normal (direction from planet to player)
-    const normal = new THREE.Vector3(
+    // Calculate current surface normal at player position (direction from planet to player)
+    const surfaceNormal = new THREE.Vector3(
       playerPos.x - planetPos.x,
       playerPos.y - planetPos.y,
       playerPos.z - planetPos.z
     ).normalize();
     
-    // Get the player's current rotation
+    // Create a rotation matrix based on the surface normal as the "up" direction
+    const upDir = surfaceNormal;
+    
+    // Get the player's current forward direction based on their rotation
     const rotation = playerBody.rotation();
-    const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    const playerQuat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
     
-    // Apply the player's rotation to the initial moveDirection
-    moveDirection.applyQuaternion(playerQuaternion);
+    // Ensure the forward direction is perpendicular to surface normal
+    const rightDir = new THREE.Vector3().crossVectors(playerForward, upDir).normalize();
+    const adjustedForward = new THREE.Vector3().crossVectors(upDir, rightDir).normalize();
     
-    // Project the rotated moveDirection onto the tangent plane
-    // v_tangent = v - (v·n)n
-    const dot = moveDirection.dot(normal);
-    moveDirection.x -= dot * normal.x;
-    moveDirection.y -= dot * normal.y;
-    moveDirection.z -= dot * normal.z;
-    moveDirection.normalize();
+    // Construct a local movement direction based on current orientation
+    const localMoveDir = new THREE.Vector3();
+    if (keys.w) localMoveDir.add(adjustedForward);
+    if (keys.s) localMoveDir.sub(adjustedForward);
+    if (keys.a) localMoveDir.sub(rightDir);
+    if (keys.d) localMoveDir.add(rightDir);
     
-    // When landed, update player orientation to face movement direction
-    if (moveDirection.length() > 0) {
-      // Calculate the new orientation based on movement direction and surface normal
-      const forwardDir = moveDirection.clone();
-      const upDir = normal.clone();
-      const rightDir = new THREE.Vector3().crossVectors(forwardDir, upDir).normalize();
+    if (localMoveDir.length() > 0) {
+      localMoveDir.normalize();
       
-      // Recalculate forward to ensure orthogonality
-      forwardDir.crossVectors(upDir, rightDir).normalize();
+      // Calculate the movement delta
+      localMoveDir.multiplyScalar(MOVE_SPEED);
       
-      // Create rotation matrix and convert to quaternion
-      const rotMatrix = new THREE.Matrix4().makeBasis(rightDir, upDir, forwardDir);
-      const newRotation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+      // Calculate new position
+      const newPosition = {
+        x: playerPos.x + localMoveDir.x,
+        y: playerPos.y + localMoveDir.y,
+        z: playerPos.z + localMoveDir.z
+      };
       
-      // Apply the new rotation
-      playerBody.setRotation({
-        x: newRotation.x,
-        y: newRotation.y,
-        z: newRotation.z,
-        w: newRotation.w
-      });
+      // Project the new position onto the planet surface
+      const dirToNewPos = new THREE.Vector3(
+        newPosition.x - planetPos.x,
+        newPosition.y - planetPos.y,
+        newPosition.z - planetPos.z
+      );
+      
+      // When calculating distance from planet center, use the correct player size
+      const distanceFromCenter = PLANET_RADIUS + PLAYER_RADIUS;
+      dirToNewPos.normalize().multiplyScalar(distanceFromCenter);
+      
+      // Final corrected position on the surface
+      newPosition.x = planetPos.x + dirToNewPos.x;
+      newPosition.y = planetPos.y + dirToNewPos.y;
+      newPosition.z = planetPos.z + dirToNewPos.z;
+      
+      // Calculate the NEW surface normal at the new position
+      const newSurfaceNormal = dirToNewPos.clone().normalize();
+      
+      // Create new orientation that faces the movement direction while aligned to the surface
+      if (localMoveDir.length() > 0) {
+        // The forward direction for the new orientation (tangent to surface, in movement direction)
+        const newForwardDir = localMoveDir.clone().normalize();
+        
+        // Make sure forward direction is perpendicular to the new surface normal
+        const dot = newForwardDir.dot(newSurfaceNormal);
+        newForwardDir.x -= dot * newSurfaceNormal.x;
+        newForwardDir.y -= dot * newSurfaceNormal.y;
+        newForwardDir.z -= dot * newSurfaceNormal.z;
+        newForwardDir.normalize();
+        
+        // Calculate the right vector
+        const newRightDir = new THREE.Vector3().crossVectors(newForwardDir, newSurfaceNormal).normalize();
+        
+        // Recalculate forward to ensure perfect orthogonality
+        const trueForward = new THREE.Vector3().crossVectors(newSurfaceNormal, newRightDir).normalize();
+        
+        // Create rotation matrix and convert to quaternion
+        const rotMatrix = new THREE.Matrix4().makeBasis(newRightDir, newSurfaceNormal, trueForward);
+        const newRotation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+        
+        // Set both the new position and orientation
+        playerBody.setTranslation(newPosition);
+        playerBody.setRotation({
+          x: newRotation.x,
+          y: newRotation.y,
+          z: newRotation.z,
+          w: newRotation.w
+        });
+      } else {
+        // If no actual movement, just update position
+        playerBody.setTranslation(newPosition);
+      }
     }
   }
-  
-  // Apply movement
-  const playerPos = playerBody.translation();
-  const newPosition = {
-    x: playerPos.x + moveDirection.x * MOVE_SPEED,
-    y: playerPos.y + moveDirection.y * MOVE_SPEED,
-    z: playerPos.z + moveDirection.z * MOVE_SPEED
-  };
-  
-  // For landed movement, ensure the player stays on the surface
-  if (!isFalling) {
-    const planetPos = planetBody.translation();
-    const dirToPlayer = new THREE.Vector3(
-      newPosition.x - planetPos.x,
-      newPosition.y - planetPos.y,
-      newPosition.z - planetPos.z
-    );
-    
-    // Calculate proper distance from planet center
-    const distanceFromCenter = PLANET_RADIUS + PLAYER_HEIGHT/2;
-    dirToPlayer.normalize().multiplyScalar(distanceFromCenter);
-    
-    // Update position to stay on surface
-    newPosition.x = planetPos.x + dirToPlayer.x;
-    newPosition.y = planetPos.y + dirToPlayer.y;
-    newPosition.z = planetPos.z + dirToPlayer.z;
-  }
-  
-  playerBody.setTranslation(newPosition);
 }
 
 function animate() {
