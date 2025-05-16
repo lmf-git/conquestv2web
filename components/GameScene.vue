@@ -20,6 +20,8 @@ let cameraRotation = { x: 0, y: 0 };
 
 // Game objects
 const playerMeshes = new Map();
+const staticBoxMeshes = new Map();
+const movingBoxMeshes = new Map();
 let localPlayerObject, localPlayerMesh;
 
 // Add these new variables near the top of the script, with other state variables
@@ -197,46 +199,153 @@ function updateCameraOrientation() {
   
   // Non-falling state (on ground or object)
   if (!playerData.falling) {
-    // Special case for box - force perfect up normal
+    // Create a smooth orientation that faces the normal direction
     if (playerData.onBox) {
-      // Force perfect up normal for box platform
+      // For boxes, use a fixed up orientation
       localPlayerObject.quaternion.identity();
     } else {
-      // For other surfaces, use the provided normal
+      // For the planet surface, orient to face outward
       localPlayerObject.quaternion.setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         normalVector
       );
     }
     
-    // Reset camera rotation and apply only the rotational components
-    cameraHolder.quaternion.identity()
-      .multiply(new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 1, 0),
-        cameraRotation.y
-      ))
-      .multiply(new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(1, 0, 0),
-        cameraRotation.x
-      ));
+    // Set camera rotation around the local axes of the player object
+    // This prevents camera "flipping" when moving across curved surfaces
+    cameraHolder.quaternion.identity();
     
-    // Only apply yaw rotation to the player mesh (no pitch)
-    localPlayerMesh.quaternion.identity();
-    localPlayerMesh.quaternion.setFromAxisAngle(
+    // Apply pitch first, then yaw - preserve the proper rotation order
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      cameraRotation.x
+    );
+    
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 1, 0),
       cameraRotation.y
     );
+    
+    // Combine the rotations in the correct order
+    cameraHolder.quaternion.multiplyQuaternions(yawQuat, pitchQuat);
+    
+    // Only apply yaw to the player mesh (for visual direction)
+    localPlayerMesh.quaternion.copy(yawQuat);
   } else {
-    // CHANGED: When falling, rotate the entire player object based on camera direction
-    // Apply the camera rotation to the player object itself
-    const fallingEuler = new THREE.Euler(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
+    // When falling, maintain a stable orientation based on camera direction
+    const fallingEuler = new THREE.Euler(0, cameraRotation.y, 0, 'YXZ');
     localPlayerObject.quaternion.setFromEuler(fallingEuler);
     
-    // Keep camera fixed to player
-    cameraHolder.quaternion.identity();
+    // Apply pitch rotation only to the camera
+    cameraHolder.quaternion.setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      cameraRotation.x
+    );
     
-    // Keep player mesh aligned with player object
+    // Make player mesh face forward
     localPlayerMesh.quaternion.identity();
+  }
+}
+
+function updateBoxes() {
+  if (!gameStore.lastServerState) return;
+  
+  // Update static boxes
+  if (gameStore.lastServerState.staticBoxes) {
+    const boxes = gameStore.lastServerState.staticBoxes;
+    
+    // Create or update static boxes
+    for (const boxData of boxes) {
+      if (!staticBoxMeshes.has(boxData.id)) {
+        // Create new box mesh
+        const boxGeometry = new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth);
+        const boxMaterial = new THREE.MeshStandardMaterial({ 
+          color: 0x2ecc71, // Green color for static boxes
+          roughness: 0.6,
+          metalness: 0.2
+        });
+        
+        const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
+        scene.add(boxMesh);
+        
+        staticBoxMeshes.set(boxData.id, {
+          mesh: boxMesh,
+          data: { ...boxData }
+        });
+      }
+      
+      // Update box position and rotation
+      const box = staticBoxMeshes.get(boxData.id);
+      box.data = { ...boxData };
+      
+      // Update mesh position
+      box.mesh.position.set(
+        boxData.position.x,
+        boxData.position.y,
+        boxData.position.z
+      );
+      
+      // Calculate normal at this position on the planet
+      const normal = new THREE.Vector3(
+        boxData.position.x,
+        boxData.position.y,
+        boxData.position.z
+      ).normalize();
+      
+      // Orient box to face away from planet center
+      const upVector = new THREE.Vector3(0, 1, 0);
+      box.mesh.quaternion.setFromUnitVectors(upVector, normal);
+    }
+  }
+  
+  // Update moving boxes
+  if (gameStore.lastServerState.movingBoxes) {
+    const boxes = gameStore.lastServerState.movingBoxes;
+    
+    // Create or update moving boxes
+    for (const boxData of boxes) {
+      if (!movingBoxMeshes.has(boxData.id)) {
+        // Create new box mesh
+        const boxGeometry = new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth);
+        const boxMaterial = new THREE.MeshStandardMaterial({ 
+          color: 0xe74c3c, // Red color for moving boxes
+          roughness: 0.6,
+          metalness: 0.2,
+          emissive: 0x300000, // Slight red glow
+          emissiveIntensity: 0.2
+        });
+        
+        const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
+        scene.add(boxMesh);
+        
+        movingBoxMeshes.set(boxData.id, {
+          mesh: boxMesh,
+          data: { ...boxData }
+        });
+      }
+      
+      // Update box position and rotation
+      const box = movingBoxMeshes.get(boxData.id);
+      box.data = { ...boxData };
+      
+      // Update mesh position
+      box.mesh.position.set(
+        boxData.position.x,
+        boxData.position.y,
+        boxData.position.z
+      );
+      
+      // Calculate normal at this position on the planet
+      const normal = new THREE.Vector3(
+        boxData.position.x,
+        boxData.position.y,
+        boxData.position.z
+      ).normalize();
+      
+      // Orient box to face away from planet center
+      const upVector = new THREE.Vector3(0, 1, 0);
+      box.mesh.quaternion.setFromUnitVectors(upVector, normal);
+    }
   }
 }
 
@@ -340,6 +449,7 @@ function animate() {
   
   updateCameraOrientation();
   updateOtherPlayers();
+  updateBoxes(); // Add call to update boxes
   
   renderer.render(scene, camera);
 }

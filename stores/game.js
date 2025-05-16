@@ -67,6 +67,14 @@ export const useGameStore = defineStore('game', {
       return this.lastServerState?.players.find(p => p.id === this.myId) || null;
     },
     
+    getStaticBoxes() {
+      return this.lastServerState?.staticBoxes || [];
+    },
+    
+    getMovingBoxes() {
+      return this.lastServerState?.movingBoxes || [];
+    },
+    
     lerpVectors(a, b, t) {
       return {
         x: a.x + (b.x - a.x) * t,
