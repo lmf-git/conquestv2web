@@ -170,6 +170,12 @@ onMounted(async () => {
   
   // Create objects array to store interactable objects
   const interactableObjects = []
+  
+  // Initialize key state variables before using them in functions
+  let falling = true, cameraPitch = 0, cameraYaw = 0, playerYaw = 0
+  
+  // Add velocity tracking for jumps and falls
+  let playerVelocity = new THREE.Vector3(0, 0, 0)
 
   // Create a variety of physics objects
   const objectTypes = [
@@ -213,40 +219,78 @@ onMounted(async () => {
     }
   ]
 
-  for (let i = 0; i < 15; i++) {
+  // Before objects creation, add random player position
+  // Randomize initial player position on the planet
+  const randomizePlayerPosition = () => {
+    // Generate random spherical coordinates
+    const phi = Math.random() * Math.PI * 2; // around the equator
+    const theta = Math.random() * Math.PI; // from pole to pole
+    
+    // Convert to Cartesian coordinates
+    const x = planetRadius * Math.sin(theta) * Math.cos(phi);
+    const y = planetRadius * Math.sin(theta) * Math.sin(phi);
+    const z = planetRadius * Math.cos(theta);
+    
+    // Position player just above surface
+    playerBody.setTranslation({
+      x: x * (1 + playerHeight/planetRadius/2),
+      y: y * (1 + playerHeight/planetRadius/2), 
+      z: z * (1 + playerHeight/planetRadius/2)
+    });
+    
+    // Calculate surface normal at this position
+    const normal = new THREE.Vector3(x, y, z).normalize().negate();
+    
+    // Align player with the surface
+    const alignQuat = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), normal
+    );
+    
+    playerBody.setRotation({
+      x: alignQuat.x,
+      y: alignQuat.y,
+      z: alignQuat.z,
+      w: alignQuat.w
+    });
+    
+    // Set initial falling state to true so player lands properly
+    falling = true;
+  }
+  
+  // Call at initialization
+  randomizePlayerPosition();
+  
+  // Create a function to spawn objects randomly around the planet
+  const spawnRandomObject = () => {
     // Select a random object type
-    const typeIndex = Math.floor(Math.random() * objectTypes.length)
-    const objectType = objectTypes[typeIndex]
+    const typeIndex = Math.floor(Math.random() * objectTypes.length);
+    const objectType = objectTypes[typeIndex];
     
-    // Calculate a safe starting position
-    let posX = Math.random() * 20 - 10
-    let posY = planetRadius + 4 + i * 1.5
-    let posZ = Math.random() * 20 - 10
+    // Generate random spherical coordinates for wider distribution
+    const phi = Math.random() * Math.PI * 2;
+    const theta = Math.random() * Math.PI;
+    const distance = planetRadius + 5 + Math.random() * 20; // Varying heights
     
-    const size = 0.5 + Math.random() * 0.5
+    // Convert to Cartesian coordinates
+    const x = distance * Math.sin(theta) * Math.cos(phi);
+    const y = distance * Math.sin(theta) * Math.sin(phi);
+    const z = distance * Math.cos(theta);
     
-    // Ensure position is outside planet radius
-    const distanceToCenter = Math.sqrt(posX*posX + posY*posY + posZ*posZ)
-    if (distanceToCenter < planetRadius + size + 0.5) {
-      const scale = (planetRadius + size + 0.5) / distanceToCenter
-      posX *= scale
-      posY *= scale
-      posZ *= scale
-    }
+    const size = 0.3 + Math.random() * 0.7; // More size variation
     
     // Create the Rapier rigid body
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(posX, posY, posZ)
+      .setTranslation(x, y, z)
       .setLinearDamping(0.2)
-      .setAngularDamping(0.3)
+      .setAngularDamping(0.3);
       
-    const body = world.createRigidBody(bodyDesc)
+    const body = world.createRigidBody(bodyDesc);
     
-    // Create the mesh and collider
-    let mesh
+    // Create the mesh and collider as before
+    let mesh;
     if (objectType.createMesh) {
-      mesh = objectType.createMesh()
-      objectType.createCollider(body)
+      mesh = objectType.createMesh();
+      objectType.createCollider(body);
     } else {
       mesh = new THREE.Mesh(
         objectType.geometry,
@@ -255,30 +299,35 @@ onMounted(async () => {
           roughness: 0.7,
           metalness: 0.3
         })
-      )
-      mesh.castShadow = true
+      );
+      mesh.castShadow = true;
       
       world.createCollider(
         objectType.colliderFn(size)
           .setRestitution(0.7)
           .setFriction(0.5),
         body
-      )
+      );
     }
     
-    mesh.scale.set(size, size, size)
-    const pos = body.translation()
-    mesh.position.set(pos.x, pos.y, pos.z)
-    scene.add(mesh)
+    mesh.scale.set(size, size, size);
+    scene.add(mesh);
     
-    interactableObjects.push({ mesh, body })
-  }
+    interactableObjects.push({ mesh, body });
+  };
 
-  let falling = true, cameraPitch = 0, cameraYaw = 0, playerYaw = 0
+  // Spawn initial objects (replacing the original for loop)
+  for (let i = 0; i < 30; i++) { // Increased number of objects
+    spawnRandomObject();
+  }
   
-  // Add velocity tracking for jumps and falls
-  let playerVelocity = new THREE.Vector3(0, 0, 0)
-  
+  // Periodically spawn new objects
+  const spawnInterval = setInterval(() => {
+    if (interactableObjects.length < 50) { // Cap the total number
+      spawnRandomObject();
+    }
+  }, 5000); // Every 5 seconds
+
   const keys = {}
   window.addEventListener('keydown', e => keys[e.code] = true)
   window.addEventListener('keyup', e => keys[e.code] = false)
@@ -361,20 +410,42 @@ onMounted(async () => {
         const pos = body.translation()
         const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
         
-        body.addForce({ x: dir.x * 25, y: dir.y * 25, z: dir.z * 25 })
+        // Increase gravity strength substantially
+        const gravityStrength = 100.0  // Increased from 50
+        body.addForce({ x: dir.x * gravityStrength, y: dir.y * gravityStrength, z: dir.z * gravityStrength })
         
-        // Add a small outward force if they're getting too close to center to prevent clipping
+        // Check if object is near or at the planet surface
         const distToCenter = Math.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z)
-        if (distToCenter < planetRadius + 0.5) {
-          const pushFactor = 20 / Math.max(0.1, distToCenter - planetRadius);
-          body.addForce({ 
-            x: dir.x * -pushFactor, 
-            y: dir.y * -pushFactor, 
-            z: dir.z * -pushFactor 
-          })
+        const distToSurface = distToCenter - planetRadius
+        
+        // Apply surface interaction forces
+        if (distToSurface < 2.0) {
+          // If very close to surface, apply stronger stabilizing force
+          if (distToSurface < 0.1) {
+            // Apply damping to help objects rest on the surface
+            const vel = body.linvel()
+            body.setLinvel({
+              x: vel.x * 0.8,
+              y: vel.y * 0.8, 
+              z: vel.z * 0.8
+            }, true)
+            
+            // Push outward if too close to prevent clipping
+            if (distToSurface < 0.05) {
+              const pushFactor = 100 / Math.max(0.01, distToSurface);
+              body.addForce({ 
+                x: dir.x * -pushFactor, 
+                y: dir.y * -pushFactor, 
+                z: dir.z * -pushFactor 
+              })
+            }
+          }
         }
       }
     })
+    
+    // Step the physics world - IMPORTANT: Add this line to advance the physics simulation!
+    world.step()
     
     // Get player position
     const playerPos = playerBody.translation()
@@ -521,25 +592,31 @@ onMounted(async () => {
         })
       }
       
-      // Handle jumping
+      // Handle jumping - only when grounded
       if (keys['Space']) {
-        // Calculate the contact point (feet position)
-        const contactPoint = playerPosition.clone().normalize().multiplyScalar(planetRadius)
+        // Calculate the contact point (feet position) precisely
+        const contactPoint = new THREE.Vector3(playerPosition.x, playerPosition.y, playerPosition.z)
+          .normalize()
+          .multiplyScalar(planetRadius)
         
         // Set to falling state
         falling = true
         
-        // Cache the current camera orientation before switching to falling mode
+        // Cache the current orientation before switching to falling mode
         cameraYaw = playerYaw
+        
+        // Calculate jump direction - directly away from the contact surface
+        const jumpDir = new THREE.Vector3(playerPosition.x, playerPosition.y, playerPosition.z)
+          .sub(contactPoint)
+          .normalize()
         
         // Switch to dynamic body for physics-based movement
         playerBody.setBodyType(RAPIER.RigidBodyType.Dynamic)
         playerBody.setLinearDamping(playerDynamicSettings.linearDamping)
         playerBody.setAngularDamping(playerDynamicSettings.angularDamping)
         
-        // Apply jump impulse directly away from contact point
-        const jumpForce = 8.0
-        const jumpDir = playerPosition.clone().sub(contactPoint).normalize()
+        // Apply moderate jump impulse for controllable jumps
+        const jumpForce = 7.0; // Reduced strength
         playerVelocity = jumpDir.multiplyScalar(jumpForce)
         
         // Apply the impulse to the body
@@ -581,13 +658,11 @@ onMounted(async () => {
       })
       
       // Calculate the exact player's feet position (contact point with planet)
-      // This should be exactly at the planet surface
       const feetPosition = new THREE.Vector3(updatedPlayerPos.x, updatedPlayerPos.y, updatedPlayerPos.z)
         .normalize()
         .multiplyScalar(planetRadius)
       
       // Position the player so that feet are exactly on the planet surface
-      // First get player position from feet by moving up along the surface normal
       const adjustedPlayerPos = feetPosition.clone().add(
         up.clone().multiplyScalar(playerHeight/2)
       )
@@ -599,23 +674,25 @@ onMounted(async () => {
         z: adjustedPlayerPos.z
       })
       
-      // Find directions based on player orientation
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat)
-      
       // Update player mesh position to match physics body
       playerMesh.position.copy(adjustedPlayerPos)
       
-      // Position camera relative to player - directly use player center + head offset
+      // Improved camera control system
+      // Get right vector (perpendicular to up and forward) for pitch rotation
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
+      const right = new THREE.Vector3().crossVectors(up, forward).normalize()
+      
+      // Set up camera with proper look-at orientation based on player orientation
+      camera.quaternion.copy(playerQuat)
+      
+      // Apply pitch rotation around the right axis, which is perpendicular to surface normal
+      camera.rotateOnAxis(right, cameraPitch)
+      
+      // Position camera at player's head position
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerQuat)
       )
       camera.position.copy(headPos)
-      
-      // Set base camera orientation aligned with player
-      camera.quaternion.copy(playerQuat)
-      
-      // Apply pitch rotation around the right axis
-      camera.rotateOnAxis(right, -cameraPitch)
     } else {
       // In air - handle free orientation
       const freefallQuat = new THREE.Quaternion().setFromEuler(
@@ -653,9 +730,10 @@ onMounted(async () => {
 
   // Update the cleanup function
   cleanup = () => {
-    document.exitPointerLock()
-    renderer.dispose()
-    window.removeEventListener('resize', handleResize)
+    document.exitPointerLock();
+    renderer.dispose();
+    window.removeEventListener('resize', handleResize);
+    clearInterval(spawnInterval); // Clear the spawn interval
   }
 })
 </script>
