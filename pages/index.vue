@@ -1,5 +1,10 @@
 <template>
-  <canvas ref="canvas" style="width: 100vw; height: 100vh; display: block;"></canvas>
+  <div @click="lockControls" style="width: 100vw; height: 100vh;">
+    <canvas ref="canvas" style="width: 100vw; height: 100vh; display: block;"></canvas>
+    <div v-if="!isPointerLocked" class="instructions">
+      Click to play
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -8,9 +13,22 @@ import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
 
 const canvas = ref(null)
+const isPointerLocked = ref(false)
+
+// Function to lock/unlock pointer
+function lockControls() {
+  if (!document.pointerLockElement) {
+    canvas.value.requestPointerLock()
+  }
+}
 
 onMounted(async () => {
   await RAPIER.init()
+  
+  // Set up pointer lock events
+  document.addEventListener('pointerlockchange', () => {
+    isPointerLocked.value = document.pointerLockElement === canvas.value
+  })
   
   const renderer = new THREE.WebGLRenderer({ canvas: canvas.value })
   renderer.setSize(window.innerWidth, window.innerHeight)
@@ -18,6 +36,13 @@ onMounted(async () => {
   scene.background = new THREE.Color(0x222233)
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
   const world = new RAPIER.World({ x: 0, y: 0, z: 0 })
+
+  // Window resize handler
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight
+    camera.updateProjectionMatrix()
+    renderer.setSize(window.innerWidth, window.innerHeight)
+  })
 
   const planetRadius = 10
   const planetMesh = new THREE.Mesh(new THREE.SphereGeometry(planetRadius, 32, 32), new THREE.MeshStandardMaterial({ color: 0x2266cc }))
@@ -30,12 +55,32 @@ onMounted(async () => {
     new THREE.CapsuleGeometry(playerRadius, playerHeight - 2 * playerRadius, 16, 8),
     new THREE.MeshStandardMaterial({ color: 0xffaa00 })
   )
+  // Rotate capsule so it's oriented correctly (pointing up along Y axis)
+  playerMesh.rotation.set(0, 0, 0)
   scene.add(playerMesh)
-  const playerBody = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, planetRadius + 10, 0))
+  const playerBody = world.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(0, planetRadius + 10, 0)
+  )
+  
   world.createCollider(
-    RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius).setRestitution(0.1).setFriction(0.8),
+    RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius)
+      .setRestitution(0.1)
+      .setFriction(0.8),
     playerBody
   )
+
+  // Create a head position for the camera (separate from the mesh)
+  const cameraOffset = new THREE.Vector3(0, playerHeight / 2 - playerRadius, 0)
+
+  // Weapon mesh (optional - adds an FPS gun model)
+  const weaponMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.1, 0.5),
+    new THREE.MeshStandardMaterial({ color: 0x333333 })
+  )
+  weaponMesh.position.set(0.2, -0.2, -0.3)
+  camera.add(weaponMesh)
+  scene.add(camera)
 
   const cubes = []
   for (let i = 0; i < 5; i++) {
@@ -61,19 +106,26 @@ onMounted(async () => {
   window.addEventListener('keydown', e => keys[e.code] = true)
   window.addEventListener('keyup', e => keys[e.code] = false)
   
-  let mouseDown = false, lastMouseX = 0, lastMouseY = 0
-  window.addEventListener('mousedown', e => (mouseDown = true, lastMouseX = e.clientX, lastMouseY = e.clientY))
-  window.addEventListener('mouseup', () => mouseDown = false)
+  // Replace mouse events with pointer lock based controls
   window.addEventListener('mousemove', e => {
-    if (!mouseDown) return
-    const dx = e.clientX - lastMouseX, dy = e.clientY - lastMouseY
-    lastMouseX = e.clientX, lastMouseY = e.clientY
-    cameraPitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraPitch - dy * 0.005))
-    if (falling) cameraYaw += dx * 0.005
-    else playerYaw += dx * 0.005
+    if (!isPointerLocked.value) return
+    
+    const movementX = e.movementX || 0
+    const movementY = e.movementY || 0
+    
+    // Update camera pitch (up/down)
+    cameraPitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraPitch - movementY * 0.002))
+    
+    // Update yaw (left/right)
+    if (falling) {
+      cameraYaw += movementX * 0.002
+    } else {
+      playerYaw += movementX * 0.002
+    }
   })
 
   function animate() {
+    // Apply gravity to dynamic objects
     world.forEachRigidBody(body => {
       if (body.isDynamic() && body !== playerBody) {
         const pos = body.translation()
@@ -93,6 +145,7 @@ onMounted(async () => {
     let onGround = false, groundNormal = new THREE.Vector3(0, 1, 0)
     const playerBodyHandle = playerBody.handle
     
+    // Check for ground contact
     for (let i = 0; i < world.bodies.length; i++) {
       if (world.bodies[i].handle !== playerBodyHandle) {
         for (let contact of world.contactsWith(playerBodyHandle)) {
@@ -106,9 +159,18 @@ onMounted(async () => {
       if (onGround) break
     }
     
-    if (onGround && falling) { falling = false; cameraPitch = 0 }
+    if (onGround && falling) { 
+      falling = false
+      
+      // Stabilize player orientation when landing - align capsule with normal
+      const playerPos = playerBody.translation()
+      const toPlanet = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z).normalize()
+      playerBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }) // Reset rotation
+      playerYaw = 0 // Reset yaw when landing
+    }
     if (!onGround && !falling) falling = true
 
+    // Handle movement based on keys
     if (!falling) {
       let moveDir = new THREE.Vector3(
         (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
@@ -125,20 +187,56 @@ onMounted(async () => {
       if (keys['Space']) {
         playerBody.addImpulse({ x: groundNormal.x * 3, y: groundNormal.y * 3, z: groundNormal.z * 3 })
       }
+    } else {
+      // Allow some air control
+      let moveDir = new THREE.Vector3(
+        (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
+        0,
+        (keys['KeyS'] ? 1 : 0) - (keys['KeyW'] ? 1 : 0)
+      )
+      
+      if (moveDir.length() > 0) {
+        moveDir.normalize().applyEuler(new THREE.Euler(0, cameraYaw, 0))
+        playerBody.addImpulse({ x: moveDir.x * 0.1, y: 0, z: moveDir.z * 0.1 })
+      }
     }
 
+    // Update player mesh position and rotation
     const playerPos = playerBody.translation()
     playerMesh.position.set(playerPos.x, playerPos.y, playerPos.z)
     
     if (!falling) {
       const up = groundNormal.clone()
-      const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(up, playerYaw)
+      const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(up, playerYaw)
       playerMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up)
       playerMesh.rotateOnWorldAxis(up, playerYaw)
+      
+      // Position camera at player's head position
+      const headPos = playerMesh.position.clone().add(
+        cameraOffset.clone().applyQuaternion(playerMesh.quaternion)
+      )
+      camera.position.copy(headPos)
+      
+      // Set camera rotation
+      const rotationMatrix = new THREE.Matrix4()
+      rotationMatrix.lookAt(
+        new THREE.Vector3(0, 0, 0),
+        forward.clone().multiplyScalar(-1),
+        up
+      )
+      
+      camera.quaternion.setFromRotationMatrix(rotationMatrix)
+      camera.rotateX(cameraPitch)
     } else {
-      playerMesh.rotation.set(cameraPitch, cameraYaw, 0)
+      // When falling, the camera follows the player directly
+      camera.position.copy(playerMesh.position).add(new THREE.Vector3(0, playerHeight/2, 0))
+      camera.rotation.set(cameraPitch, cameraYaw, 0)
+      
+      // Update player mesh rotation to match camera in freefall
+      playerMesh.rotation.y = cameraYaw
     }
     
+    // Update cube positions
     cubes.forEach(({ mesh, body }) => {
       const pos = body.translation()
       mesh.position.set(pos.x, pos.y, pos.z)
@@ -146,23 +244,16 @@ onMounted(async () => {
       mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w)
     })
 
-    if (falling) {
-      camera.position.copy(playerMesh.position).add(new THREE.Vector3(0, 2, 0))
-      camera.rotation.set(cameraPitch, cameraYaw, 0)
-    } else {
-      const up = groundNormal.clone()
-      const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(up, playerYaw)
-      camera.position.copy(playerMesh.position).add(forward.clone().multiplyScalar(-4).add(up.clone().multiplyScalar(2)))
-      camera.lookAt(playerMesh.position)
-      camera.rotateOnWorldAxis(forward.clone().cross(up).normalize(), cameraPitch)
-    }
-
     renderer.render(scene, camera)
     requestAnimationFrame(animate)
   }
   animate()
 
-  onBeforeUnmount(() => renderer.dispose())
+  onBeforeUnmount(() => {
+    document.exitPointerLock()
+    renderer.dispose()
+    window.removeEventListener('resize', null)
+  })
 })
 </script>
 
@@ -171,5 +262,20 @@ canvas {
   width: 100vw;
   height: 100vh;
   display: block;
+}
+
+.instructions {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 24px;
+  font-family: Arial, sans-serif;
+  text-align: center;
+  background-color: rgba(0, 0, 0, 0.6);
+  padding: 20px;
+  border-radius: 10px;
+  pointer-events: none;
 }
 </style>
