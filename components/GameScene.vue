@@ -172,6 +172,9 @@ function handleMouseMove(event) {
   cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
 }
 
+// Track last player position - but simpler
+let lastPlayerPosition = null;
+
 function updateCameraOrientation() {
   const playerData = gameStore.getMyPlayerData();
   if (!playerData || !localPlayerMesh) return;
@@ -183,68 +186,81 @@ function updateCameraOrientation() {
     playerData.pos.z
   );
   
-  // Create a normalized normal vector
-  const normalVector = new THREE.Vector3(
+  // Create a normalized normal vector - direct use without smoothing
+  const currentNormal = new THREE.Vector3(
     playerData.normal.x,
     playerData.normal.y,
     playerData.normal.z
   ).normalize();
   
-  // Directly update the lastNormalVector for reference
-  if (!playerData.falling) {
-    lastNormalVector.copy(normalVector);
-  }
+  // Always update the reference normal directly - no time-based smoothing
+  lastNormalVector.copy(currentNormal);
   
   const cameraHolder = camera.parent;
   
   // Non-falling state (on ground or object)
   if (!playerData.falling) {
-    // Create a smooth orientation that faces the normal direction
-    if (playerData.onBox) {
-      // For boxes, use a fixed up orientation
+    // Align player immediately with current surface normal
+    if (playerData.onBox && !playerData.onStaticBox && !playerData.onMovingBox) {
+      // For main floating box, use world up
       localPlayerObject.quaternion.identity();
     } else {
-      // For the planet surface, orient to face outward
+      // For planet surface or surface boxes, align directly with normal
       localPlayerObject.quaternion.setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
-        normalVector
+        currentNormal
       );
     }
     
-    // Set camera rotation around the local axes of the player object
-    // This prevents camera "flipping" when moving across curved surfaces
+    // Keep camera fixed relative to player
     cameraHolder.quaternion.identity();
     
-    // Apply pitch first, then yaw - preserve the proper rotation order
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0),
-      cameraRotation.x
-    );
-    
+    // Apply camera rotations
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 1, 0),
       cameraRotation.y
     );
     
-    // Combine the rotations in the correct order
-    cameraHolder.quaternion.multiplyQuaternions(yawQuat, pitchQuat);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      cameraRotation.x
+    );
     
-    // Only apply yaw to the player mesh (for visual direction)
+    // Apply in the correct order: yaw first then pitch
+    cameraHolder.quaternion.multiply(yawQuat).multiply(pitchQuat);
+    
+    // Apply only yaw to player mesh for visual direction
     localPlayerMesh.quaternion.copy(yawQuat);
   } else {
-    // When falling, maintain a stable orientation based on camera direction
-    const fallingEuler = new THREE.Euler(0, cameraRotation.y, 0, 'YXZ');
-    localPlayerObject.quaternion.setFromEuler(fallingEuler);
+    // Falling state - direct orientation
+    localPlayerObject.quaternion.identity();
     
-    // Apply pitch rotation only to the camera
+    // Apply yaw to player body
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0),
+      cameraRotation.y
+    );
+    localPlayerObject.quaternion.multiply(yawQuat);
+    
+    // Apply pitch to camera
+    cameraHolder.quaternion.identity();
     cameraHolder.quaternion.setFromAxisAngle(
       new THREE.Vector3(1, 0, 0),
       cameraRotation.x
     );
     
-    // Make player mesh face forward
     localPlayerMesh.quaternion.identity();
   }
+  
+  // Store position for next frame if needed
+  if (!lastPlayerPosition) {
+    lastPlayerPosition = new THREE.Vector3();
+  }
+  lastPlayerPosition.set(
+    playerData.pos.x,
+    playerData.pos.y,
+    playerData.pos.z
+  );
 }
 
 function updateBoxes() {
@@ -428,6 +444,25 @@ function updateOtherPlayers() {
 
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
+  
+  // Simplified player position tracking - just set previous positions directly
+  if (gameStore.lastServerState) {
+    for (const playerData of gameStore.lastServerState.players) {
+      if (!playerMeshes.has(playerData.id)) {
+        playerMeshes.set(playerData.id, {
+          prevPos: { x: playerData.pos.x, y: playerData.pos.y, z: playerData.pos.z },
+        });
+      } else {
+        // Direct update of previous position - no smoothing
+        const playerMesh = playerMeshes.get(playerData.id);
+        if (playerMesh.prevPos) {
+          playerMesh.prevPos.x = playerData.pos.x;
+          playerMesh.prevPos.y = playerData.pos.y;
+          playerMesh.prevPos.z = playerData.pos.z;
+        }
+      }
+    }
+  }
   
   if (isPointerLocked.value && gameStore.getMyPlayerData()) {
     // Send input with camera rotation AND current surface normal for jump direction
