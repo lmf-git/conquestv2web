@@ -365,22 +365,27 @@ function updateOtherPlayers() {
   }
 }
 
-// Updated animate function with better physics debugging and null checks
+// Updated animate function with better physics debugging
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
   const playerData = getMyPlayerData();
   if (debug.value && playerData) {
-    // Enhanced debugging information with null checks for velocity
+    // Enhanced debugging with more physics details
     const vel = playerData.vel || { x: 0, y: 0, z: 0 };
+    const speed = Math.sqrt(vel.x**2 + vel.y**2 + vel.z**2);
+    const height = Math.sqrt(
+      playerData.pos.x**2 + playerData.pos.y**2 + playerData.pos.z**2
+    );
+    const heightAboveSurface = height - PLANET_RADIUS;
     
     debugInfo.value = `Player: ${JSON.stringify({
       pos: [playerData.pos.x.toFixed(1), playerData.pos.y.toFixed(1), playerData.pos.z.toFixed(1)],
       vel: [vel.x.toFixed(2), vel.y.toFixed(2), vel.z.toFixed(2)],
+      speed: speed.toFixed(2),
       falling: playerData.falling,
-      height: Math.sqrt(
-        playerData.pos.x**2 + playerData.pos.y**2 + playerData.pos.z**2
-      ).toFixed(1),
+      height: height.toFixed(1),
+      altitude: heightAboveSurface.toFixed(1),
       ground: !playerData.falling ? "grounded" : "falling"
     })}`;
   }
