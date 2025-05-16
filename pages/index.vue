@@ -151,38 +151,58 @@ function updateCameraOrientation() {
     playerData.pos.x, playerData.pos.y, playerData.pos.z
   ));
   
-  // Get current orientation data
+  // Get current orientation data - prioritize contact normal when available
   const currentNormal = new THREE.Vector3(
-    playerData.normal.x, playerData.normal.y, playerData.normal.z
+    playerData.contactNormal?.x || playerData.normal.x,
+    playerData.contactNormal?.y || playerData.normal.y, 
+    playerData.contactNormal?.z || playerData.normal.z
   ).normalize();
+  
   lastNormalVector.copy(currentNormal);
   
   const cameraHolder = camera.parent;
   
   // Apply orientations based on player state
   if (!playerData.falling) {
-    // On ground
-    if (playerData.onBox && !playerData.onStaticBox && !playerData.onMovingBox) {
-      localPlayerObject.quaternion.identity();
-    } else {
-      localPlayerObject.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0), currentNormal
-      );
-    }
+    // On ground - first align player with the surface
+    // This base quaternion aligns the player's "up" with the surface normal
+    const baseQuat = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), currentNormal
+    );
     
-    // Reset and apply camera rotations
+    // Apply the rotation to align feet with surface
+    localPlayerObject.quaternion.copy(baseQuat);
+    
+    // Now we need to rotate the entire player + camera system around the normal
+    // Create a rotation around the normal axis for the yaw component
+    const normalYawQuat = new THREE.Quaternion().setFromAxisAngle(
+      currentNormal, cameraRotation.y
+    );
+    
+    // Apply this yaw rotation to the player object (this rotates everything)
+    localPlayerObject.quaternion.premultiply(normalYawQuat);
+    
+    // Reset camera holder orientation since we've rotated the base object
     cameraHolder.quaternion.identity();
-    const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 1, 0), cameraRotation.y
-    );
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0), cameraRotation.x
-    );
     
-    cameraHolder.quaternion.multiply(yawQuat).multiply(pitchQuat);
-    localPlayerMesh.quaternion.copy(yawQuat);
+    // Now handle pitch, which should only affect the camera, not the player's body
+    // To do this, we need a right vector in the rotated space
+    const rightVector = new THREE.Vector3(1, 0, 0)
+      .applyQuaternion(baseQuat)      // First align with surface
+      .applyQuaternion(normalYawQuat) // Then apply the yaw rotation
+      .normalize();
+    
+    // Apply pitch around the right vector - this only affects the camera
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
+      rightVector, cameraRotation.x
+    );
+    cameraHolder.quaternion.copy(pitchQuat);
+    
+    // The player's mesh should already be correctly oriented by the localPlayerObject
+    // rotation, so we don't need separate rotation for the mesh
+    localPlayerMesh.quaternion.identity();
   } else {
-    // In air
+    // In air - use world up for orientation
     localPlayerObject.quaternion.identity();
     
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(
@@ -332,7 +352,12 @@ function animate() {
   if (isPointerLocked.value && getMyPlayerData()) {
     const playerData = getMyPlayerData();
     const normalVector = playerData && !playerData.falling ? 
-      new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z) : 
+      // Use contact normal when available
+      new THREE.Vector3(
+        playerData.contactNormal?.x || playerData.normal.x,
+        playerData.contactNormal?.y || playerData.normal.y, 
+        playerData.contactNormal?.z || playerData.normal.z
+      ) : 
       lastNormalVector;
     
     sendInput(cameraRotation, {
@@ -383,6 +408,12 @@ onMounted(() => {
     })
   );
   box.position.set(0, planetRadius.value + 30, 0);
+  // Add rotation to the box (in radians)
+  box.rotation.set(
+    THREE.MathUtils.degToRad(10), // X-axis rotation (10 degrees)
+    THREE.MathUtils.degToRad(5),  // Y-axis rotation (5 degrees)
+    THREE.MathUtils.degToRad(8)   // Z-axis rotation (8 degrees)
+  );
   scene.add(box);
   
   // Create player
