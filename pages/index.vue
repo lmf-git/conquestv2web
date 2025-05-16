@@ -582,7 +582,9 @@ onMounted(async () => {
       
       // Calculate the exact player's feet position (contact point with planet)
       // This should be exactly at the planet surface
-      const feetPosition = updatedPlayerPos.clone().normalize().multiplyScalar(planetRadius)
+      const feetPosition = new THREE.Vector3(updatedPlayerPos.x, updatedPlayerPos.y, updatedPlayerPos.z)
+        .normalize()
+        .multiplyScalar(planetRadius)
       
       // Position the player so that feet are exactly on the planet surface
       // First get player position from feet by moving up along the surface normal
