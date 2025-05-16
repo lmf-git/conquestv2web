@@ -4,6 +4,11 @@
     <div v-if="!isPointerLocked" class="instructions">
       Click to play
     </div>
+    <div v-if="isPointerLocked" class="crosshair">+</div>
+    <div id="stats" class="stats"></div>
+    <div id="instructions" class="game-instructions">
+      WASD: Move, Space: Jump, Click: Shoot
+    </div>
   </div>
 </template>
 
@@ -11,6 +16,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
+import Stats from 'three/addons/libs/stats.module.js'
 
 const canvas = ref(null)
 const isPointerLocked = ref(false)
@@ -30,10 +36,38 @@ onMounted(async () => {
     isPointerLocked.value = document.pointerLockElement === canvas.value
   })
   
-  const renderer = new THREE.WebGLRenderer({ canvas: canvas.value })
+  // Initialize stats
+  const stats = new Stats()
+  document.getElementById('stats').appendChild(stats.dom)
+  
+  const renderer = new THREE.WebGLRenderer({ 
+    canvas: canvas.value,
+    antialias: true
+  })
   renderer.setSize(window.innerWidth, window.innerHeight)
-  const scene = new THREE.Scene().add(new THREE.DirectionalLight(0xffffff, 1).translateY(20), new THREE.AmbientLight(0x888888))
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  
+  const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x222233)
+  
+  // Improved lighting
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1)
+  dirLight.position.set(10, 20, 10)
+  dirLight.castShadow = true
+  dirLight.shadow.camera.near = 0.1
+  dirLight.shadow.camera.far = 200
+  dirLight.shadow.camera.right = 50
+  dirLight.shadow.camera.left = -50
+  dirLight.shadow.camera.top = 50
+  dirLight.shadow.camera.bottom = -50
+  dirLight.shadow.mapSize.width = 1024
+  dirLight.shadow.mapSize.height = 1024
+  scene.add(dirLight)
+  
+  const ambientLight = new THREE.AmbientLight(0x888888)
+  scene.add(ambientLight)
+  
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
   const world = new RAPIER.World({ x: 0, y: 0, z: 0 })
 
@@ -44,15 +78,23 @@ onMounted(async () => {
     renderer.setSize(window.innerWidth, window.innerHeight)
   })
 
-  const planetRadius = 30  // Increased from 10 to 30
-  const planetMesh = new THREE.Mesh(new THREE.SphereGeometry(planetRadius, 32, 32), new THREE.MeshStandardMaterial({ color: 0x2266cc }))
+  const planetRadius = 30
+  const planetMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(planetRadius, 64, 64), 
+    new THREE.MeshStandardMaterial({ 
+      color: 0x2266cc,
+      roughness: 0.8,
+      metalness: 0.2
+    })
+  )
+  planetMesh.receiveShadow = true
   scene.add(planetMesh)
+  
   const planetBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  // Increase planet friction to prevent sliding
   world.createCollider(
     RAPIER.ColliderDesc.ball(planetRadius)
-      .setFriction(10.0)  // Increased from 5.0 to 10.0
-      .setRestitution(0.2),  // Reduced bounciness
+      .setFriction(10.0)
+      .setRestitution(0.2),
     planetBody
   )
 
@@ -61,9 +103,9 @@ onMounted(async () => {
     new THREE.CapsuleGeometry(playerRadius, playerHeight - 2 * playerRadius, 16, 8),
     new THREE.MeshStandardMaterial({ color: 0xffaa00 })
   )
-  // Rotate capsule so it's oriented correctly (pointing up along Y axis)
-  playerMesh.rotation.set(0, 0, 0)
+  playerMesh.castShadow = true
   scene.add(playerMesh)
+  
   const playerBody = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, planetRadius + 10, 0)
@@ -72,76 +114,150 @@ onMounted(async () => {
   world.createCollider(
     RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius)
       .setRestitution(0.1)
-      .setFriction(2.0), // Increased player friction
+      .setFriction(2.0),
     playerBody
   )
 
-  // Create a head position for the camera (separate from the mesh)
+  // Create a head position for the camera
   const cameraOffset = new THREE.Vector3(0, playerHeight / 2 - playerRadius, 0)
 
-  // Weapon mesh (optional - adds an FPS gun model)
-  const weaponMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.1, 0.1, 0.5),
-    new THREE.MeshStandardMaterial({ color: 0x333333 })
+  // Weapon mesh with improved appearance
+  const weaponMesh = new THREE.Group()
+  
+  // Gun barrel
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.5, 8),
+    new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8 })
   )
-  weaponMesh.position.set(0.2, -0.2, -0.3)
+  barrel.rotation.x = Math.PI / 2
+  barrel.position.z = -0.4
+  barrel.position.y = -0.15
+  barrel.castShadow = true
+  weaponMesh.add(barrel)
+  
+  // Gun handle
+  const handle = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.2, 0.12),
+    new THREE.MeshStandardMaterial({ color: 0x222222 })
+  )
+  handle.position.y = -0.3
+  handle.position.z = -0.25
+  handle.castShadow = true
+  weaponMesh.add(handle)
+  
+  weaponMesh.position.set(0.3, -0.25, -0.3)
   camera.add(weaponMesh)
   scene.add(camera)
+  
+  // Setup raycaster for shooting
+  const raycaster = new THREE.Raycaster()
+  const shootDirection = new THREE.Vector3()
+  const shootOrigin = new THREE.Vector3()
+  
+  // Create objects array to store interactable objects
+  const interactableObjects = []
 
-  const cubes = []
-  for (let i = 0; i < 5; i++) {
-    const size = 1
+  // Create a variety of physics objects
+  const objectTypes = [
+    { 
+      geometry: new THREE.BoxGeometry(1, 1, 1),
+      colliderFn: (size) => RAPIER.ColliderDesc.cuboid(size/2, size/2, size/2)
+    },
+    { 
+      geometry: new THREE.SphereGeometry(0.6, 16, 16),
+      colliderFn: (size) => RAPIER.ColliderDesc.ball(size)
+    },
+    { 
+      geometry: new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+      colliderFn: (size) => RAPIER.ColliderDesc.cylinder(size/2, size)
+    },
+    { 
+      geometry: new THREE.TorusGeometry(0.5, 0.2, 16, 32),
+      createMesh: () => {
+        // For complex shapes, we'll use convex hull
+        const torus = new THREE.Mesh(
+          new THREE.TorusGeometry(0.5, 0.2, 16, 32),
+          new THREE.MeshStandardMaterial({ 
+            color: Math.random() * 0xffffff,
+            roughness: 0.7,
+            metalness: 0.3
+          })
+        )
+        torus.castShadow = true
+        return torus
+      },
+      createCollider: (body) => {
+        const torusTemp = new THREE.TorusGeometry(0.5, 0.2, 8, 16)
+        const vertices = new Float32Array(torusTemp.attributes.position.array)
+        return world.createCollider(
+          RAPIER.ColliderDesc.convexHull(vertices)
+            .setRestitution(0.7)
+            .setFriction(0.5),
+          body
+        )
+      }
+    }
+  ]
+
+  for (let i = 0; i < 15; i++) {
+    // Select a random object type
+    const typeIndex = Math.floor(Math.random() * objectTypes.length)
+    const objectType = objectTypes[typeIndex]
     
     // Calculate a safe starting position
-    let posX = Math.random() * 8 - 4;
-    let posY = planetRadius + 4 + i * 2; // Increased initial height
-    let posZ = Math.random() * 8 - 4;
+    let posX = Math.random() * 20 - 10
+    let posY = planetRadius + 4 + i * 1.5
+    let posZ = Math.random() * 20 - 10
+    
+    const size = 0.5 + Math.random() * 0.5
     
     // Ensure position is outside planet radius
-    const distanceToCenter = Math.sqrt(posX*posX + posY*posY + posZ*posZ);
+    const distanceToCenter = Math.sqrt(posX*posX + posY*posY + posZ*posZ)
     if (distanceToCenter < planetRadius + size + 0.5) {
-      const scale = (planetRadius + size + 0.5) / distanceToCenter;
-      posX *= scale;
-      posY *= scale;
-      posZ *= scale;
+      const scale = (planetRadius + size + 0.5) / distanceToCenter
+      posX *= scale
+      posY *= scale
+      posZ *= scale
     }
     
-    // Create the Rapier rigid body first
-    const cubeBodyDesc = i < 2 
-      ? RAPIER.RigidBodyDesc.fixed() 
-      : RAPIER.RigidBodyDesc.dynamic();
+    // Create the Rapier rigid body
+    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(posX, posY, posZ)
+      .setLinearDamping(0.2)
+      .setAngularDamping(0.3)
+      
+    const body = world.createRigidBody(bodyDesc)
     
-    // Set position using Rapier's native method
-    cubeBodyDesc.setTranslation(posX, posY, posZ);
-    
-    if (i >= 2) {
-      // Add damping for dynamic bodies
-      cubeBodyDesc.setLinearDamping(0.2);
+    // Create the mesh and collider
+    let mesh
+    if (objectType.createMesh) {
+      mesh = objectType.createMesh()
+      objectType.createCollider(body)
+    } else {
+      mesh = new THREE.Mesh(
+        objectType.geometry,
+        new THREE.MeshStandardMaterial({ 
+          color: Math.random() * 0xffffff,
+          roughness: 0.7,
+          metalness: 0.3
+        })
+      )
+      mesh.castShadow = true
+      
+      world.createCollider(
+        objectType.colliderFn(size)
+          .setRestitution(0.7)
+          .setFriction(0.5),
+        body
+      )
     }
     
-    const cubeBody = world.createRigidBody(cubeBodyDesc);
+    mesh.scale.set(size, size, size)
+    const pos = body.translation()
+    mesh.position.set(pos.x, pos.y, pos.z)
+    scene.add(mesh)
     
-    // Create the collider with improved physics properties
-    world.createCollider(
-      RAPIER.ColliderDesc.cuboid(size/2, size/2, size/2)
-        .setFriction(1.0)
-        .setRestitution(0.2)
-        .setDensity(1.0),
-      cubeBody
-    );
-    
-    // Create the visual mesh and position it to match the physics body
-    const cubeMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(size, size, size),
-      new THREE.MeshStandardMaterial({ color: 0x44ff44 })
-    );
-    
-    // Position is set from the physics body
-    const pos = cubeBody.translation();
-    cubeMesh.position.set(pos.x, pos.y, pos.z);
-    scene.add(cubeMesh);
-    
-    cubes.push({ mesh: cubeMesh, body: cubeBody });
+    interactableObjects.push({ mesh, body })
   }
 
   let falling = true, cameraPitch = 0, cameraYaw = 0, playerYaw = 0
@@ -164,18 +280,70 @@ onMounted(async () => {
     if (falling) {
       cameraYaw += movementX * 0.002
     } else {
-      playerYaw += movementX * 0.002 // Changed back to += direction but will fix elsewhere
+      playerYaw += movementX * 0.002
     }
+  })
+  
+  // Add shooting mechanic
+  window.addEventListener('click', () => {
+    if (!isPointerLocked.value) return
+    
+    // Get the shooting direction from the camera
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera)
+    shootDirection.copy(raycaster.ray.direction)
+    
+    // Create bullet origin point at player's position plus offset
+    shootOrigin.copy(camera.position)
+    
+    // Check for intersections with interactable objects
+    const intersects = raycaster.intersectObjects(interactableObjects.map(obj => obj.mesh))
+    
+    if (intersects.length > 0) {
+      // Find which object was hit
+      const hitObject = interactableObjects.find(obj => obj.mesh === intersects[0].object)
+      
+      if (hitObject) {
+        // Apply impulse in shooting direction
+        const impulseStrength = 10.0
+        const impulse = {
+          x: shootDirection.x * impulseStrength,
+          y: shootDirection.y * impulseStrength,
+          z: shootDirection.z * impulseStrength
+        }
+        
+        hitObject.body.applyImpulseAtPoint(
+          impulse,
+          {
+            x: intersects[0].point.x,
+            y: intersects[0].point.y,
+            z: intersects[0].point.z
+          },
+          true
+        )
+      }
+    }
+    
+    // Optionally, create a visual effect for shooting (muzzle flash or tracer)
+    const muzzleFlash = new THREE.PointLight(0xff9933, 2, 5)
+    muzzleFlash.position.copy(weaponMesh.position)
+    muzzleFlash.position.z -= 0.5
+    camera.add(muzzleFlash)
+    
+    // Remove the muzzle flash after a short time
+    setTimeout(() => {
+      camera.remove(muzzleFlash)
+    }, 50)
   })
 
   function animate() {
-    // Apply gravity to dynamic objects with improved handling
+    stats.begin()
+    
+    // Apply gravity to dynamic objects
     world.forEachRigidBody(body => {
       if (body.isDynamic() && body !== playerBody) {
         const pos = body.translation()
         const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
         
-        // Apply stronger gravity to cubes - increased from 12 to 25
         body.addForce({ x: dir.x * 25, y: dir.y * 25, z: dir.z * 25 })
         
         // Add a small outward force if they're getting too close to center to prevent clipping
@@ -194,13 +362,10 @@ onMounted(async () => {
     if (falling) {
       const pos = playerBody.translation()
       const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      // Stronger gravity for the player - increased from 19.6 to 35
       playerBody.addForce({ x: dir.x * 35, y: dir.y * 35, z: dir.z * 35 })
     } else {
-      // Apply a constant downward force when on the ground to prevent sliding off
       const pos = playerBody.translation()
       const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      // Apply a stronger force towards the planet's center - increased from 15 to 30
       playerBody.addForce({ x: dir.x * 30, y: dir.y * 30, z: dir.z * 30 })
     }
 
@@ -246,8 +411,6 @@ onMounted(async () => {
       
       // Apply angular damping to prevent rolling
       playerBody.setAngularDamping(0.99);
-      
-      // Keep the current playerYaw value instead of resetting it
     }
     if (!onGround && !falling) falling = true
 
@@ -395,8 +558,8 @@ onMounted(async () => {
       camera.quaternion.copy(freefallQuat);
     }
     
-    // Update cube positions
-    cubes.forEach(({ mesh, body }) => {
+    // Update interactable objects positions and rotations
+    interactableObjects.forEach(({ mesh, body }) => {
       const pos = body.translation()
       mesh.position.set(pos.x, pos.y, pos.z)
       const rot = body.rotation()
@@ -404,6 +567,7 @@ onMounted(async () => {
     })
 
     renderer.render(scene, camera)
+    stats.end()
     requestAnimationFrame(animate)
   }
   animate()
@@ -435,6 +599,35 @@ canvas {
   background-color: rgba(0, 0, 0, 0.6);
   padding: 20px;
   border-radius: 10px;
+  pointer-events: none;
+}
+
+.crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 24px;
+  pointer-events: none;
+}
+
+.stats {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.game-instructions {
+  position: absolute;
+  left: 10px;
+  top: 60px;
+  color: white;
+  font-family: monospace;
+  font-size: 14px;
+  background-color: rgba(0, 0, 0, 0.5);
+  padding: 5px;
+  border-radius: 3px;
   pointer-events: none;
 }
 </style>
