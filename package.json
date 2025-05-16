@@ -9,6 +9,7 @@
     "preview": "nuxt preview"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.16.2",
     "three": "^0.160.0"
   },
   "devDependencies": {
