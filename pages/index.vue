@@ -365,16 +365,23 @@ function updateOtherPlayers() {
   }
 }
 
-// Updated animate function to add debugging info
+// Updated animate function with better physics debugging and null checks
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
   const playerData = getMyPlayerData();
   if (debug.value && playerData) {
+    // Enhanced debugging information with null checks for velocity
+    const vel = playerData.vel || { x: 0, y: 0, z: 0 };
+    
     debugInfo.value = `Player: ${JSON.stringify({
       pos: [playerData.pos.x.toFixed(1), playerData.pos.y.toFixed(1), playerData.pos.z.toFixed(1)],
-      locked: isPointerLocked.value,
-      falling: playerData.falling
+      vel: [vel.x.toFixed(2), vel.y.toFixed(2), vel.z.toFixed(2)],
+      falling: playerData.falling,
+      height: Math.sqrt(
+        playerData.pos.x**2 + playerData.pos.y**2 + playerData.pos.z**2
+      ).toFixed(1),
+      ground: !playerData.falling ? "grounded" : "falling"
     })}`;
   }
   
