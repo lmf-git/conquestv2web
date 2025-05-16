@@ -114,9 +114,13 @@ onMounted(async () => {
   world.createCollider(
     RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius)
       .setRestitution(0.1)
-      .setFriction(2.0),
+      .setFriction(5.0), // Increased friction from 2.0 to 5.0 to reduce sliding
     playerBody
   )
+  
+  // Set higher damping values to reduce sliding
+  playerBody.setLinearDamping(0.5);
+  playerBody.setAngularDamping(0.99);
 
   // Create a head position for the camera
   const cameraOffset = new THREE.Vector3(0, playerHeight / 2 - playerRadius, 0)
@@ -433,35 +437,119 @@ onMounted(async () => {
         const distToPlanetCenter = toPlanetCenter.length()
         const onPlanet = Math.abs(distToPlanetCenter - (planetRadius + playerHeight/2)) < 0.2
         
-        // If on planet, add movement force in a way that follows the surface
+        // Get current linear velocity
+        const vel = playerBody.linvel();
+        const currentVelocity = new THREE.Vector3(vel.x, vel.y, vel.z);
+        
         if (onPlanet) {
-          // Adjust force to follow the curvature by applying it along the surface
-          playerBody.addForce({ 
-            x: tangent.x * 15, // Increased from 10 to 15
-            y: tangent.y * 15, 
-            z: tangent.z * 15 
-          })
+          // Calculate target velocity for movement (faster than before for responsive feel)
+          const moveSpeed = 5.0; // Units per second
+          const targetVelocity = tangent.clone().multiplyScalar(moveSpeed);
           
-          // Add a stronger force towards the planet center - increased from 5 to 15
-          const normalForce = toPlanetCenter.normalize().multiplyScalar(15);
+          // Calculate the velocity change needed
+          // This directly sets the velocity rather than just applying a force
+          const velocityChange = new THREE.Vector3();
+          velocityChange.subVectors(targetVelocity, currentVelocity.projectOnPlane(groundNormal));
+          
+          // Apply impulse to change velocity directly - much more responsive than forces
+          playerBody.applyImpulse({
+            x: velocityChange.x,
+            y: velocityChange.y,
+            z: velocityChange.z
+          }, true);
+          
+          // Apply a strong force toward the planet to maintain contact
+          const gravityStrength = 30; // Increased from 15
+          const normalForce = toPlanetCenter.normalize().multiplyScalar(gravityStrength);
           playerBody.addForce({ 
             x: normalForce.x, 
             y: normalForce.y, 
             z: normalForce.z 
-          })
+          });
+          
+          // Counter any velocity in the normal direction that would cause sliding off the surface
+          const normalVelocity = currentVelocity.dot(toPlanetCenter.normalize());
+          if (normalVelocity < 0) {
+            // If moving away from surface, apply counteracting impulse
+            const counterForce = toPlanetCenter.normalize().multiplyScalar(-normalVelocity * 0.8);
+            playerBody.applyImpulse({
+              x: counterForce.x,
+              y: counterForce.y,
+              z: counterForce.z
+            }, true);
+          }
         } else {
-          // On other objects, use the regular movement
-          playerBody.addForce({ 
-            x: tangent.x * 10, 
-            y: tangent.y * 10, 
-            z: tangent.z * 10 
-          })
+          // On other objects, use a similar approach but with different parameters
+          const moveSpeed = 4.0;
+          const targetVelocity = tangent.clone().multiplyScalar(moveSpeed);
+          
+          const velocityChange = new THREE.Vector3();
+          velocityChange.subVectors(targetVelocity, currentVelocity.projectOnPlane(groundNormal));
+          
+          playerBody.applyImpulse({
+            x: velocityChange.x,
+            y: velocityChange.y,
+            z: velocityChange.z
+          }, true);
+          
+          // Apply stronger normal force to stay on other objects
+          playerBody.addForce({
+            x: groundNormal.x * 20,
+            y: groundNormal.y * 20,
+            z: groundNormal.z * 20
+          });
         }
+      } else {
+        // When not actively moving, dampen horizontal velocity to prevent sliding
+        const vel = playerBody.linvel();
+        const velocity = new THREE.Vector3(vel.x, vel.y, vel.z);
+        const playerPos = playerBody.translation();
+        const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z).normalize();
+        
+        // Project velocity onto the surface tangent plane
+        const tangentialVelocity = velocity.clone().projectOnPlane(toPlanetCenter);
+        
+        if (tangentialVelocity.length() > 0.1) {
+          // Apply an impulse to counteract tangential velocity
+          const dampingFactor = 0.8; // How much to dampen velocity per frame
+          playerBody.applyImpulse({
+            x: -tangentialVelocity.x * dampingFactor,
+            y: -tangentialVelocity.y * dampingFactor, 
+            z: -tangentialVelocity.z * dampingFactor
+          }, true);
+        }
+        
+        // Still maintain the normal force toward the planet
+        playerBody.addForce({
+          x: toPlanetCenter.x * 30,
+          y: toPlanetCenter.y * 30,
+          z: toPlanetCenter.z * 30
+        });
       }
       
       if (keys['Space']) {
-        // Jump force increased from 60 to 100 to compensate for stronger gravity
-        playerBody.addForce({ x: groundNormal.x * 100, y: groundNormal.y * 100, z: groundNormal.z * 100 })
+        // Jump force - directly set velocity in the normal direction
+        const jumpSpeed = 10.0;
+        const jumpVel = new THREE.Vector3(
+          groundNormal.x * jumpSpeed,
+          groundNormal.y * jumpSpeed,
+          groundNormal.z * jumpSpeed
+        );
+        
+        // Get current velocity
+        const vel = playerBody.linvel();
+        const currentVel = new THREE.Vector3(vel.x, vel.y, vel.z);
+        
+        // Add jump velocity to horizontal velocity
+        const horizontalVel = currentVel.projectOnPlane(groundNormal);
+        const newVel = horizontalVel.add(jumpVel);
+        
+        // Set the velocity directly
+        playerBody.setLinvel({
+          x: newVel.x,
+          y: newVel.y,
+          z: newVel.z
+        }, true);
       }
     } else {
       // Allow some air control
@@ -581,6 +669,11 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+:global(html), :global(body) { 
+    margin: 0; 
+    padding: 0;
+}
+
 canvas {
   width: 100vw;
   height: 100vh;
