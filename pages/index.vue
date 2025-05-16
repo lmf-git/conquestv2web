@@ -465,13 +465,12 @@ function landPlayerOnSurface(playerIndex, surfaceBody, surfaceCollider, normal) 
   
   if (surfaceCollider.shapeType() === RAPIER.ShapeType.Ball) {
     const radius = surfaceCollider.radius();
-    // Calculate precise height - include full player height, not just half
-    offsetDistance = radius + PLAYER_RADIUS;  // Bottom of capsule should be on surface
+    // Use PLAYER_RADIUS to properly position the bottom of the capsule on the surface
+    offsetDistance = radius + PLAYER_RADIUS;
   } 
   else if (surfaceCollider.shapeType() === RAPIER.ShapeType.Cuboid) {
     const halfExtents = surfaceCollider.halfExtents();
     const halfHeight = halfExtents.y;
-    // Calculate precise height for cuboid
     offsetDistance = halfHeight + PLAYER_RADIUS;
   }
   
@@ -578,17 +577,14 @@ function movePlayer() {
       playerPos.z - planetPos.z
     ).normalize();
     
-    // Create a rotation matrix based on the surface normal as the "up" direction
-    const upDir = surfaceNormal;
-    
     // Get the player's current forward direction based on their rotation
     const rotation = playerBody.rotation();
     const playerQuat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
     const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
     
     // Ensure the forward direction is perpendicular to surface normal
-    const rightDir = new THREE.Vector3().crossVectors(playerForward, upDir).normalize();
-    const adjustedForward = new THREE.Vector3().crossVectors(upDir, rightDir).normalize();
+    const rightDir = new THREE.Vector3().crossVectors(playerForward, surfaceNormal).normalize();
+    const adjustedForward = new THREE.Vector3().crossVectors(surfaceNormal, rightDir).normalize();
     
     // Construct a local movement direction based on current orientation
     const localMoveDir = new THREE.Vector3();
@@ -617,7 +613,8 @@ function movePlayer() {
         newPosition.z - planetPos.z
       );
       
-      // When calculating distance from planet center, use the correct player size
+      // Calculate the proper distance from planet center to position the bottom of capsule on surface
+      // PLAYER_HEIGHT/2 is half the height of the capsule body
       const distanceFromCenter = PLANET_RADIUS + PLAYER_RADIUS;
       dirToNewPos.normalize().multiplyScalar(distanceFromCenter);
       
@@ -626,43 +623,73 @@ function movePlayer() {
       newPosition.y = planetPos.y + dirToNewPos.y;
       newPosition.z = planetPos.z + dirToNewPos.z;
       
-      // Calculate the NEW surface normal at the new position
+      // Calculate the NEW surface normal at the new position (points outward from planet)
       const newSurfaceNormal = dirToNewPos.clone().normalize();
       
-      // Create new orientation that faces the movement direction while aligned to the surface
+      // Calculate orientation - make sure player's up direction aligns with surface normal
+      const upVector = new THREE.Vector3(0, 1, 0);
+      const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, newSurfaceNormal);
+      
+      // If we're moving, we want to face the direction of movement
       if (localMoveDir.length() > 0) {
-        // The forward direction for the new orientation (tangent to surface, in movement direction)
-        const newForwardDir = localMoveDir.clone().normalize();
+        // First orient with the surface normal
+        let targetQuat = alignmentQuat.clone();
         
-        // Make sure forward direction is perpendicular to the new surface normal
-        const dot = newForwardDir.dot(newSurfaceNormal);
-        newForwardDir.x -= dot * newSurfaceNormal.x;
-        newForwardDir.y -= dot * newSurfaceNormal.y;
-        newForwardDir.z -= dot * newSurfaceNormal.z;
-        newForwardDir.normalize();
+        // Create a forward direction in the movement direction but perpendicular to normal
+        const moveDir = localMoveDir.clone().normalize();
         
-        // Calculate the right vector
-        const newRightDir = new THREE.Vector3().crossVectors(newForwardDir, newSurfaceNormal).normalize();
+        // Make sure move direction is perpendicular to the surface normal
+        const dot = moveDir.dot(newSurfaceNormal);
+        moveDir.x -= dot * newSurfaceNormal.x;
+        moveDir.y -= dot * newSurfaceNormal.y;
+        moveDir.z -= dot * newSurfaceNormal.z;
+        moveDir.normalize();
         
-        // Recalculate forward to ensure perfect orthogonality
-        const trueForward = new THREE.Vector3().crossVectors(newSurfaceNormal, newRightDir).normalize();
+        // Calculate a rotation to orient forward direction with movement direction
+        // This preserves the up direction aligned with the surface normal
+        const forwardQuat = new THREE.Quaternion();
         
-        // Create rotation matrix and convert to quaternion
-        const rotMatrix = new THREE.Matrix4().makeBasis(newRightDir, newSurfaceNormal, trueForward);
-        const newRotation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+        // The standard forward is -Z in THREE.js coordinate system
+        const stdForward = new THREE.Vector3(0, 0, -1);
         
-        // Set both the new position and orientation
-        playerBody.setTranslation(newPosition);
+        // Apply the surface normal alignment first to get the local forward
+        const localForward = stdForward.clone().applyQuaternion(alignmentQuat);
+        
+        // Create another quaternion to rotate from localForward to moveDir
+        // while preserving the up direction (surface normal)
+        const rotateToMoveDir = new THREE.Quaternion();
+        
+        // Calculate the angle between vectors in the tangent plane
+        const angle = Math.atan2(
+          new THREE.Vector3().crossVectors(localForward, moveDir).dot(newSurfaceNormal),
+          localForward.dot(moveDir)
+        );
+        
+        // Rotate around the surface normal by this angle
+        rotateToMoveDir.setFromAxisAngle(newSurfaceNormal, angle);
+        
+        // Combine the rotations: first align to surface, then rotate to face movement direction
+        targetQuat.premultiply(rotateToMoveDir);
+        
+        // Set the final rotation
         playerBody.setRotation({
-          x: newRotation.x,
-          y: newRotation.y,
-          z: newRotation.z,
-          w: newRotation.w
+          x: targetQuat.x,
+          y: targetQuat.y,
+          z: targetQuat.z,
+          w: targetQuat.w
         });
       } else {
-        // If no actual movement, just update position
-        playerBody.setTranslation(newPosition);
+        // Just align with the surface normal if not moving
+        playerBody.setRotation({
+          x: alignmentQuat.x, 
+          y: alignmentQuat.y, 
+          z: alignmentQuat.z, 
+          w: alignmentQuat.w
+        });
       }
+      
+      // Set the new position
+      playerBody.setTranslation(newPosition);
     }
   }
 }
