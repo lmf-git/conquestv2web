@@ -39,6 +39,14 @@ let eventQueue
 // Add player velocities to track their movement
 let playerVelocities = []
 
+// Track keyboard state for player controls
+const keys = {
+  w: false,
+  a: false,
+  s: false,
+  d: false
+};
+
 onMounted(async () => {
   await RAPIER.init()
   
@@ -91,12 +99,20 @@ onMounted(async () => {
   // Create additional random objects (not capsules)
   createRandomObjects(NUM_RANDOM_OBJECTS)
   
+  // Add keyboard event listeners
+  window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
+  
   animate()
 })
 
 onBeforeUnmount(() => {
   if (animationFrameId) cancelAnimationFrame(animationFrameId);
   if (renderer) renderer.dispose()
+  
+  // Remove keyboard event listeners
+  window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keyup', handleKeyUp)
 })
 
 // Function to create players (now kinematic capsules)
@@ -497,6 +513,140 @@ function alignPlayerWithNormal(playerIndex, normal) {
   playerVelocities[playerIndex].set(0, 0, 0)
 }
 
+// Handle keyboard input
+function handleKeyDown(event) {
+  switch(event.key.toLowerCase()) {
+    case 'w': keys.w = true; break;
+    case 'a': keys.a = true; break;
+    case 's': keys.s = true; break;
+    case 'd': keys.d = true; break;
+  }
+}
+
+function handleKeyUp(event) {
+  switch(event.key.toLowerCase()) {
+    case 'w': keys.w = false; break;
+    case 'a': keys.a = false; break;
+    case 's': keys.s = false; break;
+    case 'd': keys.d = false; break;
+  }
+}
+
+// Move player based on keyboard input
+function movePlayer() {
+  // Only control the first player (index 0)
+  if (playerBodies.length === 0) return;
+  
+  const playerBody = playerBodies[0];
+  const isFalling = playerFallingStates[0];
+  
+  // Get movement direction based on WASD keys
+  const moveDirection = new THREE.Vector3(0, 0, 0);
+  
+  if (keys.w) moveDirection.z -= 1; // Forward
+  if (keys.s) moveDirection.z += 1; // Backward
+  if (keys.a) moveDirection.x -= 1; // Left
+  if (keys.d) moveDirection.x += 1; // Right
+  
+  // If no movement, return early
+  if (moveDirection.length() === 0) return;
+  
+  // Normalize the movement direction
+  moveDirection.normalize();
+  
+  const MOVE_SPEED = 0.1; // Movement speed
+  
+  if (isFalling) {
+    // When falling, move in the direction the player is facing
+    // Get the player's current rotation
+    const rotation = playerBody.rotation();
+    const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    
+    // Apply rotation to the movement direction
+    moveDirection.applyQuaternion(playerQuaternion);
+  } else {
+    // When landed, move along the surface
+    // We need to transform the movement direction to be tangential to the surface
+    // Get player position and planet position
+    const playerPos = playerBody.translation();
+    const planetPos = planetBody.translation();
+    
+    // Calculate normal (direction from planet to player)
+    const normal = new THREE.Vector3(
+      playerPos.x - planetPos.x,
+      playerPos.y - planetPos.y,
+      playerPos.z - planetPos.z
+    ).normalize();
+    
+    // Get the player's current rotation
+    const rotation = playerBody.rotation();
+    const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    
+    // Apply the player's rotation to the initial moveDirection
+    moveDirection.applyQuaternion(playerQuaternion);
+    
+    // Project the rotated moveDirection onto the tangent plane
+    // v_tangent = v - (v·n)n
+    const dot = moveDirection.dot(normal);
+    moveDirection.x -= dot * normal.x;
+    moveDirection.y -= dot * normal.y;
+    moveDirection.z -= dot * normal.z;
+    moveDirection.normalize();
+    
+    // When landed, update player orientation to face movement direction
+    if (moveDirection.length() > 0) {
+      // Calculate the new orientation based on movement direction and surface normal
+      const forwardDir = moveDirection.clone();
+      const upDir = normal.clone();
+      const rightDir = new THREE.Vector3().crossVectors(forwardDir, upDir).normalize();
+      
+      // Recalculate forward to ensure orthogonality
+      forwardDir.crossVectors(upDir, rightDir).normalize();
+      
+      // Create rotation matrix and convert to quaternion
+      const rotMatrix = new THREE.Matrix4().makeBasis(rightDir, upDir, forwardDir);
+      const newRotation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+      
+      // Apply the new rotation
+      playerBody.setRotation({
+        x: newRotation.x,
+        y: newRotation.y,
+        z: newRotation.z,
+        w: newRotation.w
+      });
+    }
+  }
+  
+  // Apply movement
+  const playerPos = playerBody.translation();
+  const newPosition = {
+    x: playerPos.x + moveDirection.x * MOVE_SPEED,
+    y: playerPos.y + moveDirection.y * MOVE_SPEED,
+    z: playerPos.z + moveDirection.z * MOVE_SPEED
+  };
+  
+  // For landed movement, ensure the player stays on the surface
+  if (!isFalling) {
+    const planetPos = planetBody.translation();
+    const dirToPlayer = new THREE.Vector3(
+      newPosition.x - planetPos.x,
+      newPosition.y - planetPos.y,
+      newPosition.z - planetPos.z
+    );
+    
+    // Calculate proper distance from planet center
+    const distanceFromCenter = PLANET_RADIUS + PLAYER_HEIGHT/2;
+    dirToPlayer.normalize().multiplyScalar(distanceFromCenter);
+    
+    // Update position to stay on surface
+    newPosition.x = planetPos.x + dirToPlayer.x;
+    newPosition.y = planetPos.y + dirToPlayer.y;
+    newPosition.z = planetPos.z + dirToPlayer.z;
+  }
+  
+  playerBody.setTranslation(newPosition);
+}
+
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
   
@@ -505,6 +655,9 @@ function animate() {
   // Process collision events
   physicsWorld.step(eventQueue)
   handleCollisions()
+  
+  // Move player based on keyboard input (add this line)
+  movePlayer()
   
   // Update planet position
   if (planetBody && planetMesh) {
