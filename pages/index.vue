@@ -10,11 +10,15 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
 import * as THREE from 'three';
+import { 
+  PLANET_RADIUS, BOX, STATIC_BOXES, MOVING_BOXES,
+  calculateSurfacePosition, calculateNormal, crossProduct, lerpVectors
+} from 'conquest-shared';
 
 // Game state (formerly in store)
 const players = ref(new Map());
 const myId = ref(null);
-const planetRadius = ref(100);
+const planetRadius = ref(PLANET_RADIUS);
 const ws = ref(null);
 const lastServerState = ref(null);
 const previousServerState = ref(null);
@@ -85,14 +89,6 @@ function getStaticBoxes() {
 
 function getMovingBoxes() {
   return lastServerState.value?.movingBoxes || [];
-}
-
-function lerpVectors(a, b, t) {
-  return {
-    x: a.x + (b.x - a.x) * t,
-    y: a.y + (b.y - a.y) * t,
-    z: a.z + (b.z - a.z) * t
-  };
 }
 
 // Event handlers
@@ -399,21 +395,16 @@ onMounted(() => {
     new THREE.MeshStandardMaterial({ color: 0x5555ff, roughness: 0.8, metalness: 0.2 })
   ));
   
-  // Create main platform
+  // Create main platform using shared BOX definition
   const box = new THREE.Mesh(
-    new THREE.BoxGeometry(30, 3, 30),
+    new THREE.BoxGeometry(BOX.width, BOX.height, BOX.depth),
     new THREE.MeshStandardMaterial({ 
       color: 0xFF8C00, roughness: 0.7, metalness: 0.2,
       emissive: 0x331400, emissiveIntensity: 0.2
     })
   );
-  box.position.set(0, planetRadius.value + 30, 0);
-  // Add rotation to the box (in radians)
-  box.rotation.set(
-    THREE.MathUtils.degToRad(10), // X-axis rotation (10 degrees)
-    THREE.MathUtils.degToRad(5),  // Y-axis rotation (5 degrees)
-    THREE.MathUtils.degToRad(8)   // Z-axis rotation (8 degrees)
-  );
+  box.position.set(BOX.position.x, BOX.position.y, BOX.position.z);
+  box.rotation.set(BOX.rotation.x, BOX.rotation.y, BOX.rotation.z);
   scene.add(box);
   
   // Create player
