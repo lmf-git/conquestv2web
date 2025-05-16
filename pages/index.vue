@@ -382,16 +382,16 @@ function alignPlayerWithNormal(playerIndex, normal) {
 
 // Completely reworked function to test if a ray would hit a cube
 function raycastHitsCube(from, direction, maxDistance) {
-  // Create a ray for this test
+  // Cast multiple rays to better detect obstacles
   const rayDir = direction.clone().normalize();
+  const rayStart = new RAPIER.Vector3(from.x, from.y, from.z);
+  const rayDirR = new RAPIER.Vector3(rayDir.x, rayDir.y, rayDir.z);
+  
+  // Check central ray
   const raycastResult = physicsWorld.castRay(
-    new RAPIER.Ray(
-      new RAPIER.Vector3(from.x, from.y, from.z),
-      new RAPIER.Vector3(rayDir.x, rayDir.y, rayDir.z)
-    ),
+    new RAPIER.Ray(rayStart, rayDirR),
     maxDistance,
     true, // Solid
-    // Only interact with static bodies (cubes)
     (handle) => {
       const collider = physicsWorld.getCollider(handle);
       if (!collider) return false;
@@ -403,360 +403,77 @@ function raycastHitsCube(from, direction, maxDistance) {
     }
   );
   
-  return raycastResult !== null;
-}
-
-// Enhanced collision detection with much better coverage
-function willPlayerCollideAtPosition(position, surfaceNormal, excludeHandle) {
-  try {
-    if (!position || typeof position.x !== 'number') {
-      return false;
-    }
-    
-    // First, do the cheap cube-specific check
-    if (isCollidingWithCube(position, excludeHandle)) {
-      return true;
-    }
-    
-    // Use a much larger radius for more aggressive collision prevention
-    const collisionRadius = PLAYER_RADIUS * 1.5; // Increased from 1.25 to 1.5
-    
-    // Create offset vector for top position calculation
-    const upOffset = new THREE.Vector3(
-      surfaceNormal.x * (PLAYER_HEIGHT/2 - PLAYER_RADIUS),
-      surfaceNormal.y * (PLAYER_HEIGHT/2 - PLAYER_RADIUS),
-      surfaceNormal.z * (PLAYER_HEIGHT/2 - PLAYER_RADIUS)
-    );
-    
-    // Test MANY points along the capsule axis for better coverage
-    const numPoints = 12; // Increased from 7 to 12
-    const shape = new RAPIER.Ball(collisionRadius);
-    const rot = new RAPIER.Quaternion(0, 0, 0, 1);
-    
-    // Test each point along the capsule axis
-    for (let i = 0; i < numPoints; i++) {
-      const t = i / (numPoints - 1); // 0 to 1
-      const testPos = new RAPIER.Vector3(
-        position.x + upOffset.x * t,
-        position.y + upOffset.y * t,
-        position.z + upOffset.z * t
-      );
-      
-      const intersections = physicsWorld.intersectionsWithShape(
-        testPos, rot, shape, (handle) => handle !== excludeHandle
-      );
-      
-      if (Array.isArray(intersections) && intersections.length > 0) {
-        return true; // Collision detected
-      }
-    }
-    
-    // Test with different shapes, including a cuboid at the center to catch cube-cube interactions
-    const centerPos = new RAPIER.Vector3(
-      position.x + upOffset.x * 0.5,
-      position.y + upOffset.y * 0.5,
-      position.z + upOffset.z * 0.5
-    );
-    
-    // Test with an oversized sphere
-    const centerShape = new RAPIER.Ball(collisionRadius * 1.3);
-    const centerIntersections = physicsWorld.intersectionsWithShape(
-      centerPos, rot, centerShape, (handle) => handle !== excludeHandle
-    );
-    
-    if (Array.isArray(centerIntersections) && centerIntersections.length > 0) {
-      return true;
-    }
-    
-    return false;
-  } catch (error) {
-    console.error("Error in collision check:", error);
-    return false; // Assume no collision on error
-  }
-}
-
-// More conservative movePlayer function with extra cube checks
-function movePlayer() {
-  // Only control the first player
-  if (playerBodies.length === 0) return;
+  if (raycastResult !== null) return true;
   
+  // Cast some additional rays for better coverage
+  // This creates a small cone of rays to better detect edges
+  const angles = [Math.PI/12, -Math.PI/12]; // ±15 degrees
+  for (const angle of angles) {
+    // Create rotated direction vectors
+    const rotAxis = new THREE.Vector3().crossVectors(rayDir, new THREE.Vector3(0,1,0)).normalize();
+    if (rotAxis.length() > 0.01) {
+      const rotQuat = new THREE.Quaternion().setFromAxisAngle(rotAxis, angle);
+      const altDir = rayDir.clone().applyQuaternion(rotQuat);
+      
+      const altRayResult = physicsWorld.castRay(
+        new RAPIER.Ray(
+          rayStart,
+          new RAPIER.Vector3(altDir.x, altDir.y, altDir.z)
+        ),
+        maxDistance,
+        true,
+        (handle) => {
+          const collider = physicsWorld.getCollider(handle);
+          if (!collider) return false;
+          
+          const bodyHandle = collider.parent();
+          const body = physicsWorld.getRigidBody(bodyHandle);
+          
+          return body && body.isFixed();
+        }
+      );
+      
+      if (altRayResult !== null) return true;
+    }
+  }
+  
+  return false;
+}
+
+// Improve isCollidingWithCube to use the player's actual capsule shape
+function isCollidingWithCube(position, excludeHandle, isCurrentPosition = false) {
+  // Create a shape matching the player's actual capsule collider
+  const bufferMultiplier = isCurrentPosition ? 1.0 : 1.2;
+  
+  // Use a capsule shape that matches the player's dimensions
+  const halfHeight = PLAYER_HEIGHT / 2;
+  const radius = PLAYER_RADIUS * bufferMultiplier;
+  
+  // Create a capsule shape for collision testing
+  const shape = new RAPIER.Capsule(halfHeight, radius);
+  const pos = new RAPIER.Vector3(position.x, position.y, position.z);
+  
+  // Use player's orientation for the capsule
   const playerBody = playerBodies[0];
-  if (!playerBody) return;
+  const rot = playerBody ? playerBody.rotation() : new RAPIER.Quaternion(0, 0, 0, 1);
   
-  // Get player position
-  const playerPos = playerBody.translation();
-  if (!playerPos || typeof playerPos.x !== 'number') return;
-  
-  const isFalling = playerFallingStates[0];
-  
-  // Get player collider handle
-  const playerHandle = getPlayerColliderHandle(0);
-  if (!playerHandle) return;
-  
-  // Get movement direction based on WASD keys
-  const moveDirection = new THREE.Vector3(0, 0, 0);
-  
-  if (keys.w) moveDirection.z -= 1; // Forward
-  if (keys.s) moveDirection.z += 1; // Backward
-  if (keys.a) moveDirection.x -= 1; // Left
-  if (keys.d) moveDirection.x += 1; // Right
-  
-  // If no movement, return early
-  if (moveDirection.length() === 0) return;
-  
-  // Normalize the movement direction
-  moveDirection.normalize();
-  
-  const MOVE_SPEED = 0.1; // Movement speed
-  
-  if (isFalling) {
-    // When falling, move in the direction the player is facing
-    const rotation = playerBody.rotation();
-    const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
-    
-    // Apply rotation to the movement direction
-    moveDirection.applyQuaternion(playerQuaternion);
-    
-    // Check planetward direction for potential landing
-    const planetPos = planetBody.translation();
-    const toPlanet = new THREE.Vector3(
-      planetPos.x - playerPos.x, 
-      planetPos.y - playerPos.y, 
-      planetPos.z - playerPos.z
-    ).normalize();
-    
-    const distance = new THREE.Vector3(
-      planetPos.x - playerPos.x,
-      planetPos.y - playerPos.y,
-      planetPos.z - playerPos.z
-    ).length();
-    
-    // If close enough to planet surface, consider landing
-    if (distance <= PLANET_RADIUS + PLAYER_RADIUS + 0.1) {
-      // Land on planet
-      playerFallingStates[0] = false;
-      const normal = stickToSphere(playerBody, planetBody);
-      alignPlayerWithNormal(0, normal);
-      return;
-    }
-    
-    // Apply falling movement
-    const newPosition = {
-      x: playerPos.x + moveDirection.x * MOVE_SPEED * 0.5, // Reduced control when falling
-      y: playerPos.y + moveDirection.y * MOVE_SPEED * 0.5,
-      z: playerPos.z + moveDirection.z * MOVE_SPEED * 0.5
-    };
-    
-    // Apply gravity influence
-    playerVelocities[0].add(toPlanet.multiplyScalar(0.005));
-    
-    // Apply velocity to position
-    newPosition.x += playerVelocities[0].x;
-    newPosition.y += playerVelocities[0].y;
-    newPosition.z += playerVelocities[0].z;
-    
-    // Check for collision with any object (including planet)
-    const wouldCollide = detectCollisionsInDirection(
-      playerPos, 
-      new THREE.Vector3(
-        newPosition.x - playerPos.x,
-        newPosition.y - playerPos.y,
-        newPosition.z - playerPos.z
-      ).normalize(), 
-      playerHandle
-    );
-    
-    if (!wouldCollide) {
-      playerBody.setTranslation(newPosition);
-    } else {
-      // If collision detected, player has hit something - land if it's the planet
-      playerFallingStates[0] = false;
+  // Use Rapier's intersectionsWithShape with the actual capsule shape
+  const intersections = physicsWorld.intersectionsWithShape(
+    pos, rot, shape, (handle) => {
+      if (handle === excludeHandle) return false;
       
-      // Stick to planet surface and align
-      const normal = stickToSphere(playerBody, planetBody);
-      alignPlayerWithNormal(0, normal);
-    }
-  } else {
-    // On planet surface - manual movement along the tangent plane
-    const planetPos = planetBody.translation();
-    
-    // First, ensure player is stuck to the planet surface
-    const surfaceNormal = stickToSphere(playerBody, planetBody);
-    
-    // Get the player's orientation for movement direction
-    const rotation = playerBody.rotation();
-    const playerQuat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
-    const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
-    
-    // Calculate tangent plane basis vectors
-    const rightDir = new THREE.Vector3().crossVectors(playerForward, surfaceNormal).normalize();
-    const adjustedForward = new THREE.Vector3().crossVectors(surfaceNormal, rightDir).normalize();
-    
-    // Calculate movement in tangent plane
-    const localMoveDir = new THREE.Vector3();
-    if (keys.w) localMoveDir.add(adjustedForward);
-    if (keys.s) localMoveDir.sub(adjustedForward);
-    if (keys.a) localMoveDir.sub(rightDir);
-    if (keys.d) localMoveDir.add(rightDir);
-    
-    if (localMoveDir.length() > 0) {
-      localMoveDir.normalize();
+      const collider = physicsWorld.getCollider(handle);
+      if (!collider) return false;
       
-      // Check for collisions in movement direction
-      const collisionDetected = detectCollisionsInDirection(playerPos, localMoveDir, playerHandle);
+      const bodyHandle = collider.parent();
+      const body = physicsWorld.getRigidBody(bodyHandle);
       
-      if (!collisionDetected) {
-        // Calculate new position on sphere surface
-        const newPosition = {
-          x: playerPos.x + localMoveDir.x * MOVE_SPEED,
-          y: playerPos.y + localMoveDir.y * MOVE_SPEED,
-          z: playerPos.z + localMoveDir.z * MOVE_SPEED
-        };
-        
-        // Project point back to sphere surface
-        const dirToSphere = new THREE.Vector3(
-          newPosition.x - planetPos.x,
-          newPosition.y - planetPos.y,
-          newPosition.z - planetPos.z
-        ).normalize();
-        
-        const surfacePosition = {
-          x: planetPos.x + dirToSphere.x * (PLANET_RADIUS + PLAYER_RADIUS),
-          y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_RADIUS),
-          z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_RADIUS)
-        };
-        
-        // Check for collision at the new surface position
-        const collisionAtSurface = detectCollisionsInDirection(
-          playerPos,
-          new THREE.Vector3(
-            surfacePosition.x - playerPos.x,
-            surfacePosition.y - playerPos.y,
-            surfacePosition.z - playerPos.z
-          ).normalize(),
-          playerHandle
-        );
-        
-        if (!collisionAtSurface) {
-          // Move to the new position
-          playerBody.setTranslation(surfacePosition);
-          
-          // Update player rotation to face movement direction
-          const upVector = new THREE.Vector3(0, 1, 0);
-          const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, dirToSphere);
-          
-          // Calculate rotation to face movement direction
-          const stdForward = new THREE.Vector3(0, 0, -1);
-          const localForward = stdForward.clone().applyQuaternion(alignmentQuat);
-          
-          const angle = Math.atan2(
-            new THREE.Vector3().crossVectors(localForward, localMoveDir).dot(dirToSphere),
-            localForward.dot(localMoveDir)
-          );
-          
-          const rotateQuat = new THREE.Quaternion().setFromAxisAngle(dirToSphere, angle);
-          const finalQuat = alignmentQuat.clone().premultiply(rotateQuat);
-          
-          // Set final rotation
-          playerBody.setRotation({
-            x: finalQuat.x,
-            y: finalQuat.y,
-            z: finalQuat.z,
-            w: finalQuat.w
-          });
-        }
-      } else {
-        // Try to slide along walls when collision is detected
-        const rayResults = [];
-        const numRays = 8;
-        
-        // Cast rays in a circle around the player to find possible movement directions
-        for (let i = 0; i < numRays; i++) {
-          const angle = (i / numRays) * Math.PI * 2;
-          const rayDir = new THREE.Vector3(
-            Math.cos(angle), 
-            0, 
-            Math.sin(angle)
-          );
-          
-          // Project ray direction onto tangent plane
-          const dot = rayDir.dot(surfaceNormal);
-          rayDir.sub(surfaceNormal.clone().multiplyScalar(dot));
-          rayDir.normalize();
-          
-          // Check if this direction would cause a collision
-          const isBlocked = testDirectionalCollision(playerPos, rayDir, playerHandle);
-          
-          // If not blocked, record as a valid movement direction
-          if (!isBlocked) {
-            // Calculate how closely this matches our desired direction
-            const directionMatch = rayDir.dot(localMoveDir);
-            
-            if (directionMatch > 0.1) { // Only consider directions somewhat aligned with input
-              rayResults.push({
-                direction: rayDir,
-                match: directionMatch
-              });
-            }
-          }
-        }
-        
-        // Find the best alternative direction (most aligned with desired movement)
-        if (rayResults.length > 0) {
-          // Sort by closest match to desired direction
-          rayResults.sort((a, b) => b.match - a.match);
-          const bestDir = rayResults[0].direction;
-          
-          // Move in the best available direction
-          const slidePosition = {
-            x: playerPos.x + bestDir.x * MOVE_SPEED * 0.7, // Reduced speed when sliding
-            y: playerPos.y + bestDir.y * MOVE_SPEED * 0.7,
-            z: playerPos.z + bestDir.z * MOVE_SPEED * 0.7
-          };
-          
-          // Project back to sphere surface
-          const dirToSphere = new THREE.Vector3(
-            slidePosition.x - planetPos.x,
-            slidePosition.y - planetPos.y,
-            slidePosition.z - planetPos.z
-          ).normalize();
-          
-          const slideSurfacePosition = {
-            x: planetPos.x + dirToSphere.x * (PLANET_RADIUS + PLAYER_RADIUS),
-            y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_RADIUS),
-            z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_RADIUS)
-          };
-          
-          playerBody.setTranslation(slideSurfacePosition);
-        }
-      }
+      // Specifically target cube colliders on fixed bodies
+      return body && body.isFixed() && collider.shapeType() === RAPIER.ShapeType.Cuboid;
     }
-  }
-}
-
-// Function for manual sphere surface sticking
-function stickToSphere(playerBody, planetBody) {
-  const playerPos = playerBody.translation();
-  const planetPos = planetBody.translation();
+  );
   
-  // Get direction from planet to player (surface normal)
-  const surfaceNormal = new THREE.Vector3(
-    playerPos.x - planetPos.x,
-    playerPos.y - planetPos.y,
-    playerPos.z - planetPos.z
-  ).normalize();
-  
-  // Calculate the correct position on the sphere surface
-  const correctPosition = {
-    x: planetPos.x + surfaceNormal.x * (PLANET_RADIUS + PLAYER_RADIUS),
-    y: planetPos.y + surfaceNormal.y * (PLANET_RADIUS + PLAYER_RADIUS),
-    z: planetPos.z + surfaceNormal.z * (PLANET_RADIUS + PLAYER_RADIUS)
-  };
-  
-  // Move player to the correct position on the surface
-  playerBody.setTranslation(correctPosition);
-  
-  return surfaceNormal;
+  return Array.isArray(intersections) && intersections.length > 0;
 }
 
 // Test collision with objects in a specific direction
@@ -792,7 +509,7 @@ function testDirectionalCollision(position, direction, excludeHandle) {
 
 // Advanced shape-based collision detection
 function detectCollisionsInDirection(playerPos, direction, playerHandle) {
-  // Create a shape for testing collisions slightly ahead of the player
+  // Create a test position slightly ahead in the movement direction
   const testDistance = PLAYER_RADIUS * 1.2;
   const testPos = {
     x: playerPos.x + direction.x * testDistance,
@@ -800,10 +517,15 @@ function detectCollisionsInDirection(playerPos, direction, playerHandle) {
     z: playerPos.z + direction.z * testDistance
   };
   
-  // Use a ball shape for testing
-  const shape = new RAPIER.Ball(PLAYER_RADIUS * 1.1);
+  // Use a capsule shape matching the player's actual collider
+  const halfHeight = PLAYER_HEIGHT / 2;
+  const radius = PLAYER_RADIUS;
+  const shape = new RAPIER.Capsule(halfHeight, radius);
   const pos = new RAPIER.Vector3(testPos.x, testPos.y, testPos.z);
-  const rot = new RAPIER.Quaternion(0, 0, 0, 1);
+  
+  // Use player's orientation for correct capsule alignment
+  const playerBody = playerBodies[0];
+  const rot = playerBody ? playerBody.rotation() : new RAPIER.Quaternion(0, 0, 0, 1);
   
   // Check for intersections with all fixed objects
   const intersections = physicsWorld.intersectionsWithShape(
@@ -1049,6 +771,314 @@ function getPlayerColliderHandle(playerIndex) {
     }
   }
   return null; // Return null if no handle found for this player
+}
+
+// More conservative movePlayer function with extra cube checks
+function movePlayer() {
+  // Only control the first player
+  if (playerBodies.length === 0) return;
+  
+  const playerBody = playerBodies[0];
+  if (!playerBody) return;
+  
+  // Get player position
+  const playerPos = playerBody.translation();
+  if (!playerPos || typeof playerPos.x !== 'number') return;
+  
+  const isFalling = playerFallingStates[0];
+  
+  // Get player collider handle
+  const playerHandle = getPlayerColliderHandle(0);
+  if (!playerHandle) return;
+  
+  // Get movement direction based on WASD keys
+  const moveDirection = new THREE.Vector3(0, 0, 0);
+  
+  if (keys.w) moveDirection.z -= 1; // Forward
+  if (keys.s) moveDirection.z += 1; // Backward
+  if (keys.a) moveDirection.x -= 1; // Left
+  if (keys.d) moveDirection.x += 1; // Right
+  
+  // If no movement, return early
+  if (moveDirection.length() === 0) return;
+  
+  // Normalize the movement direction
+  moveDirection.normalize();
+  
+  const MOVE_SPEED = 0.1; // Movement speed
+  
+  if (isFalling) {
+    // When falling, move in the direction the player is facing
+    const rotation = playerBody.rotation();
+    const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    
+    // Apply rotation to the movement direction
+    moveDirection.applyQuaternion(playerQuaternion);
+    
+    // Check planetward direction for potential landing
+    const planetPos = planetBody.translation();
+    const toPlanet = new THREE.Vector3(
+      planetPos.x - playerPos.x, 
+      planetPos.y - playerPos.y, 
+      planetPos.z - playerPos.z
+    ).normalize();
+    
+    const distance = new THREE.Vector3(
+      planetPos.x - playerPos.x,
+      planetPos.y - playerPos.y,
+      planetPos.z - playerPos.z
+    ).length();
+    
+    // If close enough to planet surface, consider landing
+    if (distance <= PLANET_RADIUS + PLAYER_RADIUS + 0.1) {
+      // Land on planet
+      playerFallingStates[0] = false;
+      const normal = stickToSphere(playerBody, planetBody);
+      alignPlayerWithNormal(0, normal);
+      return;
+    }
+    
+    // Apply falling movement
+    const newPosition = {
+      x: playerPos.x + moveDirection.x * MOVE_SPEED * 0.5, // Reduced control when falling
+      y: playerPos.y + moveDirection.y * MOVE_SPEED * 0.5,
+      z: playerPos.z + moveDirection.z * MOVE_SPEED * 0.5
+    };
+    
+    // Apply gravity influence
+    playerVelocities[0].add(toPlanet.multiplyScalar(0.005));
+    
+    // Apply velocity to position
+    newPosition.x += playerVelocities[0].x;
+    newPosition.y += playerVelocities[0].y;
+    newPosition.z += playerVelocities[0].z;
+    
+    // Check for collision with any object (including planet)
+    const wouldCollide = detectCollisionsInDirection(
+      playerPos, 
+      new THREE.Vector3(
+        newPosition.x - playerPos.x,
+        newPosition.y - playerPos.y,
+        newPosition.z - playerPos.z
+      ).normalize(), 
+      playerHandle
+    );
+    
+    if (!wouldCollide) {
+      playerBody.setTranslation(newPosition);
+    } else {
+      // If collision detected, player has hit something - land if it's the planet
+      playerFallingStates[0] = false;
+      
+      // Stick to planet surface and align
+      const normal = stickToSphere(playerBody, planetBody);
+      alignPlayerWithNormal(0, normal);
+    }
+  } else {
+    // On planet surface - manual movement along the tangent plane
+    const planetPos = planetBody.translation();
+    
+    // First, ensure player is stuck to the planet surface
+    const surfaceNormal = stickToSphere(playerBody, planetBody);
+    
+    // Get the player's orientation for movement direction
+    const rotation = playerBody.rotation();
+    const playerQuat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+    const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
+    
+    // Calculate tangent plane basis vectors
+    const rightDir = new THREE.Vector3().crossVectors(playerForward, surfaceNormal).normalize();
+    const adjustedForward = new THREE.Vector3().crossVectors(surfaceNormal, rightDir).normalize();
+    
+    // Calculate movement in tangent plane
+    const localMoveDir = new THREE.Vector3();
+    if (keys.w) localMoveDir.add(adjustedForward);
+    if (keys.s) localMoveDir.sub(adjustedForward);
+    if (keys.a) localMoveDir.sub(rightDir);
+    if (keys.d) localMoveDir.add(rightDir);
+    
+    if (localMoveDir.length() > 0) {
+      localMoveDir.normalize();
+      
+      // IMPORTANT: First check if we're already colliding with a cube
+      // If so, we need to push away from it slightly before allowing movement
+      if (isCollidingWithCube(playerPos, playerHandle, true)) {
+        // We're already inside or very close to a cube
+        // Try to nudge away by sticking to the planet more aggressively
+        stickToSphere(playerBody, planetBody);
+        return; // Skip movement this frame to prevent moving through objects
+      }
+      
+      // Enhanced collision checking using multiple methods
+      const collisionDetected = 
+        detectCollisionsInDirection(playerPos, localMoveDir, playerHandle) ||
+        raycastHitsCube(playerPos, localMoveDir, PLAYER_RADIUS * 2.0);
+      
+      if (!collisionDetected) {
+        // Calculate new position on sphere surface
+        const newPosition = {
+          x: playerPos.x + localMoveDir.x * MOVE_SPEED,
+          y: playerPos.y + localMoveDir.y * MOVE_SPEED,
+          z: playerPos.z + localMoveDir.z * MOVE_SPEED
+        };
+        
+        // Project point back to sphere surface
+        const dirToSphere = new THREE.Vector3(
+          newPosition.x - planetPos.x,
+          newPosition.y - planetPos.y,
+          newPosition.z - planetPos.z
+        ).normalize();
+        
+        const surfacePosition = {
+          x: planetPos.x + dirToSphere.x * (PLANET_RADIUS + PLAYER_RADIUS),
+          y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_RADIUS),
+          z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_RADIUS)
+        };
+        
+        // Check for collision at the new surface position
+        const collisionAtSurface = detectCollisionsInDirection(
+          playerPos,
+          new THREE.Vector3(
+            surfacePosition.x - playerPos.x,
+            surfacePosition.y - playerPos.y,
+            surfacePosition.z - playerPos.z
+          ).normalize(),
+          playerHandle
+        );
+        
+        if (!collisionAtSurface) {
+          // Move to the new position
+          playerBody.setTranslation(surfacePosition);
+          
+          // Update player rotation to face movement direction
+          const upVector = new THREE.Vector3(0, 1, 0);
+          const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, dirToSphere);
+          
+          // Calculate rotation to face movement direction
+          const stdForward = new THREE.Vector3(0, 0, -1);
+          const localForward = stdForward.clone().applyQuaternion(alignmentQuat);
+          
+          const angle = Math.atan2(
+            new THREE.Vector3().crossVectors(localForward, localMoveDir).dot(dirToSphere),
+            localForward.dot(localMoveDir)
+          );
+          
+          const rotateQuat = new THREE.Quaternion().setFromAxisAngle(dirToSphere, angle);
+          const finalQuat = alignmentQuat.clone().premultiply(rotateQuat);
+          
+          // Set final rotation
+          playerBody.setRotation({
+            x: finalQuat.x,
+            y: finalQuat.y,
+            z: finalQuat.z,
+            w: finalQuat.w
+          });
+        }
+      } else {
+        // Try to slide along walls when collision is detected
+        const rayResults = [];
+        const numRays = 8;
+        
+        // Cast rays in a circle around the player to find possible movement directions
+        for (let i = 0; i < numRays; i++) {
+          const angle = (i / numRays) * Math.PI * 2;
+          const rayDir = new THREE.Vector3(
+            Math.cos(angle), 
+            0, 
+            Math.sin(angle)
+          );
+          
+          // Project ray direction onto tangent plane
+          const dot = rayDir.dot(surfaceNormal);
+          rayDir.sub(surfaceNormal.clone().multiplyScalar(dot));
+          rayDir.normalize();
+          
+          // Check if this direction would cause a collision
+          const isBlocked = testDirectionalCollision(playerPos, rayDir, playerHandle);
+          
+          // If not blocked, record as a valid movement direction
+          if (!isBlocked) {
+            // Calculate how closely this matches our desired direction
+            const directionMatch = rayDir.dot(localMoveDir);
+            
+            if (directionMatch > 0.1) { // Only consider directions somewhat aligned with input
+              rayResults.push({
+                direction: rayDir,
+                match: directionMatch
+              });
+            }
+          }
+        }
+        
+        // Find the best alternative direction (most aligned with desired movement)
+        if (rayResults.length > 0) {
+          // Sort by closest match to desired direction
+          rayResults.sort((a, b) => b.match - a.match);
+          const bestDir = rayResults[0].direction;
+          
+          // Move in the best available direction
+          const slidePosition = {
+            x: playerPos.x + bestDir.x * MOVE_SPEED * 0.7, // Reduced speed when sliding
+            y: playerPos.y + bestDir.y * MOVE_SPEED * 0.7,
+            z: playerPos.z + bestDir.z * MOVE_SPEED * 0.7
+          };
+          
+          // Project back to sphere surface
+          const dirToSphere = new THREE.Vector3(
+            slidePosition.x - planetPos.x,
+            slidePosition.y - planetPos.y,
+            slidePosition.z - planetPos.z
+          ).normalize();
+          
+          const slideSurfacePosition = {
+            x: planetPos.x + dirToSphere.x * (PLANET_RADIUS + PLAYER_RADIUS),
+            y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_RADIUS),
+            z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_RADIUS)
+          };
+          
+          playerBody.setTranslation(slideSurfacePosition);
+        }
+      }
+    }
+  }
+}
+
+// Function for manual sphere surface sticking
+function stickToSphere(playerBody, planetBody) {
+  if (!playerBody || !planetBody) return null;
+  
+  const playerPos = playerBody.translation();
+  const planetPos = planetBody.translation();
+  
+  // Calculate direction from planet center to player
+  const toPlayer = new THREE.Vector3(
+    playerPos.x - planetPos.x,
+    playerPos.y - planetPos.y,
+    playerPos.z - planetPos.z
+  );
+  
+  const distance = toPlayer.length();
+  if (distance === 0) return null;
+  
+  toPlayer.normalize();
+  
+  // Calculate the desired position on the surface of the planet
+  const surfacePosition = {
+    x: planetPos.x + toPlayer.x * (PLANET_RADIUS + PLAYER_RADIUS),
+    y: planetPos.y + toPlayer.y * (PLANET_RADIUS + PLAYER_RADIUS),
+    z: planetPos.z + toPlayer.z * (PLANET_RADIUS + PLAYER_RADIUS)
+  };
+  
+  // Check if the player is already close enough to the surface
+  const offset = 0.1; // Allowable offset from the surface
+  const isCloseEnough = Math.abs(surfacePosition.y - playerPos.y) < offset;
+  
+  if (!isCloseEnough) {
+    // Snap the player to the surface position
+    playerBody.setTranslation(surfacePosition);
+  }
+  
+  return toPlayer; // Return the normal direction
 }
 </script>
 
