@@ -181,11 +181,11 @@ onMounted(async () => {
       if (moveDir.length() > 0) {
         moveDir.normalize().applyAxisAngle(groundNormal, playerYaw)
         const tangent = moveDir.clone().projectOnPlane(groundNormal)
-        playerBody.addImpulse({ x: tangent.x * 0.5, y: tangent.y * 0.5, z: tangent.z * 0.5 })
+        playerBody.addForce({ x: tangent.x * 10, y: tangent.y * 10, z: tangent.z * 10 }) // Changed from addImpulse to addForce with increased value
       }
       
       if (keys['Space']) {
-        playerBody.addImpulse({ x: groundNormal.x * 3, y: groundNormal.y * 3, z: groundNormal.z * 3 })
+        playerBody.addForce({ x: groundNormal.x * 60, y: groundNormal.y * 60, z: groundNormal.z * 60 }) // Changed from addImpulse to addForce with increased value
       }
     } else {
       // Allow some air control
@@ -197,7 +197,7 @@ onMounted(async () => {
       
       if (moveDir.length() > 0) {
         moveDir.normalize().applyEuler(new THREE.Euler(0, cameraYaw, 0))
-        playerBody.addImpulse({ x: moveDir.x * 0.1, y: 0, z: moveDir.z * 0.1 })
+        playerBody.addForce({ x: moveDir.x * 5, y: 0, z: moveDir.z * 5 }) // Changed from addImpulse to addForce with adjusted value
       }
     }
 
@@ -207,26 +207,35 @@ onMounted(async () => {
     
     if (!falling) {
       const up = groundNormal.clone()
-      const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(up, playerYaw)
-      playerMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up)
-      playerMesh.rotateOnWorldAxis(up, playerYaw)
+      // Create a proper forward vector that respects the ground normal
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const axis = new THREE.Vector3().crossVectors(worldUp, up).normalize();
+      const angle = Math.acos(worldUp.dot(up));
+      
+      // Calculate the forward direction based on the player's yaw and surface normal
+      const forward = new THREE.Vector3(0, 0, -1);
+      if (angle > 0.01) { // Only apply rotation if the angle is significant
+        forward.applyAxisAngle(axis, angle);
+      }
+      forward.applyAxisAngle(up, playerYaw);
+      
+      // Align player mesh with the ground normal
+      playerMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      playerMesh.rotateOnWorldAxis(up, playerYaw);
       
       // Position camera at player's head position
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerMesh.quaternion)
-      )
-      camera.position.copy(headPos)
+      );
+      camera.position.copy(headPos);
       
-      // Set camera rotation
-      const rotationMatrix = new THREE.Matrix4()
-      rotationMatrix.lookAt(
-        new THREE.Vector3(0, 0, 0),
-        forward.clone().multiplyScalar(-1),
-        up
-      )
+      // Set camera's base orientation to align with the surface normal
+      const right = new THREE.Vector3().crossVectors(forward, up).normalize();
+      const cameraRotMatrix = new THREE.Matrix4().makeBasis(right, up, forward.clone().multiplyScalar(-1));
+      camera.quaternion.setFromRotationMatrix(cameraRotMatrix);
       
-      camera.quaternion.setFromRotationMatrix(rotationMatrix)
-      camera.rotateX(cameraPitch)
+      // Apply the pitch rotation around the right axis
+      camera.rotateOnAxis(right, cameraPitch);
     } else {
       // When falling, the camera follows the player directly
       camera.position.copy(playerMesh.position).add(new THREE.Vector3(0, playerHeight/2, 0))
