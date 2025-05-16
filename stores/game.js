@@ -48,26 +48,19 @@ export const useGameStore = defineStore('game', {
       this.ws.onerror = error => console.error('WebSocket error:', error);
     },
     
-    sendInput(rotation) {
+    sendInput(cameraRotation, normalVector) {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       
-      // Build direction object directly
-      const dir = { 
-        x: (this.keys.a ? -1 : 0) + (this.keys.d ? 1 : 0),
-        y: 0,
-        z: (this.keys.w ? -1 : 0) + (this.keys.s ? 1 : 0)
+      // Create input message with keys, rotation, and normal vector
+      const inputMessage = {
+        type: 'input',
+        keys: { ...this.keys },
+        rotation: { ...cameraRotation },
+        normal: normalVector  // Include surface normal for jump direction
       };
       
-      // Only send if there's actual input
-      this.ws.send(JSON.stringify({
-        type: 'input',
-        data: {
-          dir,
-          rot: rotation,
-          jump: this.keys[' '] || false,
-          timestamp: Date.now()
-        }
-      }));
+      // Send to server
+      this.ws.send(JSON.stringify(inputMessage));
     },
     
     getMyPlayerData() {

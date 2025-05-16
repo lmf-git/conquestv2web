@@ -22,6 +22,9 @@ let cameraRotation = { x: 0, y: 0 };
 const playerMeshes = new Map();
 let localPlayerObject, localPlayerMesh;
 
+// Add these new variables near the top of the script, with other state variables
+let lastNormalVector = new THREE.Vector3(0, 1, 0);  // Default up
+
 onMounted(() => {
   // Connect to server
   gameStore.connectToServer();
@@ -53,6 +56,21 @@ onMounted(() => {
   );
   scene.add(planet);
   
+  // Create a static box platform - make it larger and positioned higher
+  const boxSize = { width: 30, height: 3, depth: 30 }; // Larger box
+  const boxPosition = { x: 0, y: gameStore.planetRadius + 30, z: 0 }; // Higher position
+  const boxGeometry = new THREE.BoxGeometry(boxSize.width, boxSize.height, boxSize.depth);
+  const boxMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0xFF8C00, // Brighter orange color for visibility
+    roughness: 0.7, 
+    metalness: 0.2,
+    emissive: 0x331400, // Add slight glow
+    emissiveIntensity: 0.2
+  });
+  const box = new THREE.Mesh(boxGeometry, boxMaterial);
+  box.position.set(boxPosition.x, boxPosition.y, boxPosition.z);
+  scene.add(box);
+  
   // Create local player object and mesh
   localPlayerObject = new THREE.Group();
   scene.add(localPlayerObject);
@@ -73,8 +91,8 @@ onMounted(() => {
   container.value.addEventListener('click', requestPointerLock);
   setupEventListeners();
   
-  // Initial position
-  localPlayerObject.position.set(0, gameStore.planetRadius + 10, 0);
+  // Initial position - updated to match server's higher spawn point
+  localPlayerObject.position.set(0, gameStore.planetRadius + 50, 0);
   
   animate();
 });
@@ -156,41 +174,69 @@ function updateCameraOrientation() {
   const playerData = gameStore.getMyPlayerData();
   if (!playerData || !localPlayerMesh) return;
   
-  // Update position (combine vector creation and copying)
-  localPlayerObject.position.set(playerData.pos.x, playerData.pos.y, playerData.pos.z);
+  // Set exact position values - no interpolation
+  localPlayerObject.position.set(
+    playerData.pos.x,
+    playerData.pos.y,
+    playerData.pos.z
+  );
   
-  // Create and normalize normal vector in one step
-  const normalVector = new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z).normalize();
+  // Create a normalized normal vector
+  const normalVector = new THREE.Vector3(
+    playerData.normal.x,
+    playerData.normal.y,
+    playerData.normal.z
+  ).normalize();
+  
+  // Directly update the lastNormalVector for reference
+  if (!playerData.falling) {
+    lastNormalVector.copy(normalVector);
+  }
+  
   const cameraHolder = camera.parent;
   
+  // Non-falling state (on ground or object)
   if (!playerData.falling) {
-    // Set quaternion directly from normal vector
-    localPlayerObject.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normalVector);
-    
-    // Reset and apply rotations in one chain
-    cameraHolder.quaternion.identity()
-      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.y))
-      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), cameraRotation.x));
-    
-    // Orient to normal but facing camera
-    const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraHolder.quaternion).projectOnPlane(normalVector);
-    
-    if (cameraDirection.length() > 0.001) {
-      cameraDirection.normalize();
-      localPlayerMesh.quaternion.setFromRotationMatrix(
-        new THREE.Matrix4().lookAt(
-          localPlayerMesh.position,
-          new THREE.Vector3().addVectors(localPlayerMesh.position, cameraDirection),
-          normalVector
-        )
+    // Special case for box - force perfect up normal
+    if (playerData.onBox) {
+      // Force perfect up normal for box platform
+      localPlayerObject.quaternion.identity();
+    } else {
+      // For other surfaces, use the provided normal
+      localPlayerObject.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        normalVector
       );
     }
+    
+    // Reset camera rotation and apply only the rotational components
+    cameraHolder.quaternion.identity()
+      .multiply(new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        cameraRotation.y
+      ))
+      .multiply(new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(1, 0, 0),
+        cameraRotation.x
+      ));
+    
+    // Only apply yaw rotation to the player mesh (no pitch)
+    localPlayerMesh.quaternion.identity();
+    localPlayerMesh.quaternion.setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0),
+      cameraRotation.y
+    );
   } else {
-    // When falling, simplify by doing everything in one step
-    const euler = new THREE.Euler(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
-    localPlayerObject.quaternion.identity();
-    cameraHolder.quaternion.setFromEuler(euler);
-    localPlayerMesh.quaternion.copy(cameraHolder.quaternion);
+    // CHANGED: When falling, rotate the entire player object based on camera direction
+    // Apply the camera rotation to the player object itself
+    const fallingEuler = new THREE.Euler(cameraRotation.x, cameraRotation.y, 0, 'YXZ');
+    localPlayerObject.quaternion.setFromEuler(fallingEuler);
+    
+    // Keep camera fixed to player
+    cameraHolder.quaternion.identity();
+    
+    // Keep player mesh aligned with player object
+    localPlayerMesh.quaternion.identity();
   }
 }
 
@@ -225,29 +271,31 @@ function updateOtherPlayers() {
     
     // Update player data
     const player = playerMeshes.get(playerData.id);
-    player.targetPos = { ...playerData.pos };
-    player.targetRot = { ...playerData.rot };
-    player.targetNormal = { ...(playerData.normal || { x: 0, y: 1, z: 0 }) };
+    
+    // Use direct setting for position instead of interpolation
+    player.pos.x = playerData.pos.x;
+    player.pos.y = playerData.pos.y;
+    player.pos.z = playerData.pos.z;
+    player.normal.x = playerData.normal.x;
+    player.normal.y = playerData.normal.y;
+    player.normal.z = playerData.normal.z;
     player.falling = playerData.falling;
     
-    // Interpolate and position
-    const t = 0.2;
-    player.pos = gameStore.lerpVectors(player.pos, player.targetPos, t);
-    player.normal = gameStore.lerpVectors(player.normal, player.targetNormal, t);
+    // Update mesh position - no interpolation
     player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
     
     if (player.falling) {
       player.mesh.quaternion.setFromEuler(new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ'));
     } else {
-      // Orient to surface
+      // Orient to surface - direct setting, no slerp
       const normalVector = new THREE.Vector3(
         player.normal.x, player.normal.y, player.normal.z
       ).normalize();
       
       const lookVector = new THREE.Vector3(
-        Math.sin(player.targetRot.y) * Math.cos(player.targetRot.x),
-        Math.sin(player.targetRot.x),
-        Math.cos(player.targetRot.y) * Math.cos(player.targetRot.x)
+        Math.sin(playerData.rot.y) * Math.cos(playerData.rot.x),
+        Math.sin(playerData.rot.x),
+        Math.cos(playerData.rot.y) * Math.cos(playerData.rot.x)
       );
       
       const matrix = new THREE.Matrix4().lookAt(
@@ -256,8 +304,7 @@ function updateOtherPlayers() {
         normalVector
       );
       
-      const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
-      player.mesh.quaternion.slerp(quaternion, 0.2);
+      player.mesh.quaternion.setFromRotationMatrix(matrix);
     }
   }
   
@@ -274,7 +321,21 @@ function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
   if (isPointerLocked.value && gameStore.getMyPlayerData()) {
-    gameStore.sendInput(cameraRotation);
+    // Send input with camera rotation AND current surface normal for jump direction
+    const playerData = gameStore.getMyPlayerData();
+    const normalVector = playerData && !playerData.falling ? 
+      new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z).normalize() : 
+      lastNormalVector;
+    
+    // Convert THREE.Vector3 to simple object for transport
+    const normalForJump = {
+      x: normalVector.x,
+      y: normalVector.y,
+      z: normalVector.z
+    };
+    
+    // Send both camera rotation and the normal vector
+    gameStore.sendInput(cameraRotation, normalForJump);
   }
   
   updateCameraOrientation();
