@@ -28,6 +28,10 @@ function lockControls() {
   }
 }
 
+// Register cleanup function before any await statements
+let cleanup = () => {}
+onBeforeUnmount(() => cleanup())
+
 onMounted(async () => {
   await RAPIER.init()
   
@@ -69,14 +73,17 @@ onMounted(async () => {
   scene.add(ambientLight)
   
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
-  const world = new RAPIER.World({ x: 0, y: 0, z: 0 })
+  
+  // Fix the deprecated World initialization syntax
+  const world = new RAPIER.World({ gravity: { x: 0, y: 0, z: 0 } })
 
   // Window resize handler
-  window.addEventListener('resize', () => {
+  const handleResize = () => {
     camera.aspect = window.innerWidth / window.innerHeight
     camera.updateProjectionMatrix()
     renderer.setSize(window.innerWidth, window.innerHeight)
-  })
+  }
+  window.addEventListener('resize', handleResize)
 
   const planetRadius = 30
   const planetMesh = new THREE.Mesh(
@@ -574,27 +581,39 @@ onMounted(async () => {
       })
       
       // Calculate the exact player's feet position (contact point with planet)
-      const feetPosition = playerMesh.position.clone().sub(
+      // This should be exactly at the planet surface
+      const feetPosition = updatedPlayerPos.clone().normalize().multiplyScalar(planetRadius)
+      
+      // Position the player so that feet are exactly on the planet surface
+      // First get player position from feet by moving up along the surface normal
+      const adjustedPlayerPos = feetPosition.clone().add(
         up.clone().multiplyScalar(playerHeight/2)
       )
       
-      // Find forward and right directions based on player orientation
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
+      // Update physics body to ensure feet stay on surface
+      playerBody.setTranslation({
+        x: adjustedPlayerPos.x,
+        y: adjustedPlayerPos.y,
+        z: adjustedPlayerPos.z
+      })
+      
+      // Find directions based on player orientation
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat)
       
-      // Position camera relative to feet position, not the player's center
-      // First position at feet
-      camera.position.copy(feetPosition);
-      // Then move up to head height
-      camera.position.add(up.clone().multiplyScalar(playerHeight));
-      // Then add the camera offset
-      camera.position.add(cameraOffset.clone().applyQuaternion(playerQuat));
+      // Update player mesh position to match physics body
+      playerMesh.position.copy(adjustedPlayerPos)
+      
+      // Position camera relative to player - directly use player center + head offset
+      const headPos = playerMesh.position.clone().add(
+        cameraOffset.clone().applyQuaternion(playerQuat)
+      )
+      camera.position.copy(headPos)
       
       // Set base camera orientation aligned with player
-      camera.quaternion.copy(playerQuat);
+      camera.quaternion.copy(playerQuat)
       
       // Apply pitch rotation around the right axis
-      camera.rotateOnAxis(right, -cameraPitch);
+      camera.rotateOnAxis(right, -cameraPitch)
     } else {
       // In air - handle free orientation
       const freefallQuat = new THREE.Quaternion().setFromEuler(
@@ -630,11 +649,12 @@ onMounted(async () => {
   }
   animate()
 
-  onBeforeUnmount(() => {
+  // Update the cleanup function
+  cleanup = () => {
     document.exitPointerLock()
     renderer.dispose()
-    window.removeEventListener('resize', null)
-  })
+    window.removeEventListener('resize', handleResize)
+  }
 })
 </script>
 
