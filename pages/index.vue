@@ -44,14 +44,15 @@ onMounted(async () => {
     renderer.setSize(window.innerWidth, window.innerHeight)
   })
 
-  const planetRadius = 10
+  const planetRadius = 30  // Increased from 10 to 30
   const planetMesh = new THREE.Mesh(new THREE.SphereGeometry(planetRadius, 32, 32), new THREE.MeshStandardMaterial({ color: 0x2266cc }))
   scene.add(planetMesh)
   const planetBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
   // Increase planet friction to prevent sliding
   world.createCollider(
     RAPIER.ColliderDesc.ball(planetRadius)
-      .setFriction(5.0), // High friction value to prevent sliding
+      .setFriction(10.0)  // Increased from 5.0 to 10.0
+      .setRestitution(0.2),  // Reduced bounciness
     planetBody
   )
 
@@ -90,19 +91,57 @@ onMounted(async () => {
   const cubes = []
   for (let i = 0; i < 5; i++) {
     const size = 1
+    
+    // Calculate a safe starting position
+    let posX = Math.random() * 8 - 4;
+    let posY = planetRadius + 4 + i * 2; // Increased initial height
+    let posZ = Math.random() * 8 - 4;
+    
+    // Ensure position is outside planet radius
+    const distanceToCenter = Math.sqrt(posX*posX + posY*posY + posZ*posZ);
+    if (distanceToCenter < planetRadius + size + 0.5) {
+      const scale = (planetRadius + size + 0.5) / distanceToCenter;
+      posX *= scale;
+      posY *= scale;
+      posZ *= scale;
+    }
+    
+    // Create the Rapier rigid body first
+    const cubeBodyDesc = i < 2 
+      ? RAPIER.RigidBodyDesc.fixed() 
+      : RAPIER.RigidBodyDesc.dynamic();
+    
+    // Set position using Rapier's native method
+    cubeBodyDesc.setTranslation(posX, posY, posZ);
+    
+    if (i >= 2) {
+      // Add damping for dynamic bodies
+      cubeBodyDesc.setLinearDamping(0.2);
+    }
+    
+    const cubeBody = world.createRigidBody(cubeBodyDesc);
+    
+    // Create the collider with improved physics properties
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(size/2, size/2, size/2)
+        .setFriction(1.0)
+        .setRestitution(0.2)
+        .setDensity(1.0),
+      cubeBody
+    );
+    
+    // Create the visual mesh and position it to match the physics body
     const cubeMesh = new THREE.Mesh(
       new THREE.BoxGeometry(size, size, size),
       new THREE.MeshStandardMaterial({ color: 0x44ff44 })
-    )
-    cubeMesh.position.set(Math.random() * 8 - 4, planetRadius + 2 + i * 2, Math.random() * 8 - 4)
-    scene.add(cubeMesh)
-    const cubeBodyDesc = i < 2 
-      ? RAPIER.RigidBodyDesc.fixed() 
-      : RAPIER.RigidBodyDesc.dynamic()
-    cubeBodyDesc.setTranslation(cubeMesh.position.x, cubeMesh.position.y, cubeMesh.position.z)
-    const cubeBody = world.createRigidBody(cubeBodyDesc)
-    world.createCollider(RAPIER.ColliderDesc.cuboid(size/2, size/2, size/2), cubeBody)
-    cubes.push({ mesh: cubeMesh, body: cubeBody })
+    );
+    
+    // Position is set from the physics body
+    const pos = cubeBody.translation();
+    cubeMesh.position.set(pos.x, pos.y, pos.z);
+    scene.add(cubeMesh);
+    
+    cubes.push({ mesh: cubeMesh, body: cubeBody });
   }
 
   let falling = true, cameraPitch = 0, cameraYaw = 0, playerYaw = 0
@@ -125,31 +164,44 @@ onMounted(async () => {
     if (falling) {
       cameraYaw += movementX * 0.002
     } else {
-      playerYaw += movementX * 0.002
+      playerYaw += movementX * 0.002 // Changed back to += direction but will fix elsewhere
     }
   })
 
   function animate() {
-    // Apply gravity to dynamic objects
+    // Apply gravity to dynamic objects with improved handling
     world.forEachRigidBody(body => {
       if (body.isDynamic() && body !== playerBody) {
         const pos = body.translation()
         const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-        body.addForce({ x: dir.x * 9.8, y: dir.y * 9.8, z: dir.z * 9.8 })
+        
+        // Apply stronger gravity to cubes - increased from 12 to 25
+        body.addForce({ x: dir.x * 25, y: dir.y * 25, z: dir.z * 25 })
+        
+        // Add a small outward force if they're getting too close to center to prevent clipping
+        const distToCenter = Math.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z)
+        if (distToCenter < planetRadius + 0.5) {
+          const pushFactor = 20 / Math.max(0.1, distToCenter - planetRadius);
+          body.addForce({ 
+            x: dir.x * -pushFactor, 
+            y: dir.y * -pushFactor, 
+            z: dir.z * -pushFactor 
+          })
+        }
       }
     })
     
     if (falling) {
       const pos = playerBody.translation()
       const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      // Stronger gravity for the player to stay on the planet
-      playerBody.addForce({ x: dir.x * 19.6, y: dir.y * 19.6, z: dir.z * 19.6 })
+      // Stronger gravity for the player - increased from 19.6 to 35
+      playerBody.addForce({ x: dir.x * 35, y: dir.y * 35, z: dir.z * 35 })
     } else {
       // Apply a constant downward force when on the ground to prevent sliding off
       const pos = playerBody.translation()
       const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      // Apply a continuous force towards the planet's center
-      playerBody.addForce({ x: dir.x * 15, y: dir.y * 15, z: dir.z * 15 })
+      // Apply a stronger force towards the planet's center - increased from 15 to 30
+      playerBody.addForce({ x: dir.x * 30, y: dir.y * 30, z: dir.z * 30 })
     }
 
     world.step()
@@ -208,7 +260,8 @@ onMounted(async () => {
       )
       
       if (moveDir.length() > 0) {
-        moveDir.normalize().applyAxisAngle(groundNormal, playerYaw)
+        // Apply a negative yaw to fix the inversion problem
+        moveDir.normalize().applyAxisAngle(groundNormal, -playerYaw)
         const tangent = moveDir.clone().projectOnPlane(groundNormal)
         
         // Check if we're on the planet
@@ -221,13 +274,13 @@ onMounted(async () => {
         if (onPlanet) {
           // Adjust force to follow the curvature by applying it along the surface
           playerBody.addForce({ 
-            x: tangent.x * 10, 
-            y: tangent.y * 10, 
-            z: tangent.z * 10 
+            x: tangent.x * 15, // Increased from 10 to 15
+            y: tangent.y * 15, 
+            z: tangent.z * 15 
           })
           
-          // Add a small force towards the planet center to counteract potential upward drift
-          const normalForce = toPlanetCenter.normalize().multiplyScalar(5);
+          // Add a stronger force towards the planet center - increased from 5 to 15
+          const normalForce = toPlanetCenter.normalize().multiplyScalar(15);
           playerBody.addForce({ 
             x: normalForce.x, 
             y: normalForce.y, 
@@ -244,7 +297,8 @@ onMounted(async () => {
       }
       
       if (keys['Space']) {
-        playerBody.addForce({ x: groundNormal.x * 60, y: groundNormal.y * 60, z: groundNormal.z * 60 }) // Changed from addImpulse to addForce with increased value
+        // Jump force increased from 60 to 100 to compensate for stronger gravity
+        playerBody.addForce({ x: groundNormal.x * 100, y: groundNormal.y * 100, z: groundNormal.z * 100 })
       }
     } else {
       // Allow some air control
@@ -284,8 +338,8 @@ onMounted(async () => {
       // First align with surface by rotating from world-up to surface-normal
       const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
       
-      // Then apply yaw rotation around the surface normal (up vector)
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, playerYaw);
+      // Then apply yaw rotation around the surface normal (up vector) with negative sign
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, -playerYaw);
       
       // Combine: first align with surface, then apply yaw rotation
       const playerQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat);
