@@ -159,7 +159,7 @@ const handleKeyUp = (event) => {
   }
 };
 
-// Camera orientation function - was missing
+// Enhanced camera orientation based on spherical gravity
 function updateCameraOrientation() {
   const playerData = getMyPlayerData();
   if (!playerData) return;
@@ -183,54 +183,54 @@ function updateCameraOrientation() {
   
   currentPosition.lerp(targetPosition, actualLerpFactor);
   
-  // Get current normal
-  const currentNormal = new THREE.Vector3(
+  // Determine up vector - use contact normal if available, otherwise use position normal
+  const upVector = new THREE.Vector3(
     playerData.contactNormal?.x || playerData.normal.x,
     playerData.contactNormal?.y || playerData.normal.y, 
     playerData.contactNormal?.z || playerData.normal.z
   ).normalize();
   
-  lastNormalVector.copy(currentNormal);
+  // Cache for interpolation
+  lastNormalVector.lerp(upVector, 0.2);
+  
+  // Align player object with the surface normal
+  alignWithSurface(localPlayerObject, upVector, cameraRotation);
+  
+  // Get camera holder for pitch rotation
   const cameraHolder = camera.parent;
   
-  // Apply orientation based on player state
-  if (!playerData.falling) {
-    // Combined orientation logic for grounded player
-    const baseQuat = new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0), currentNormal
-    );
-    
-    localPlayerObject.quaternion.copy(baseQuat);
-    
-    localPlayerObject.quaternion.premultiply(
-      new THREE.Quaternion().setFromAxisAngle(currentNormal, cameraRotation.y)
-    );
-    
-    cameraHolder.quaternion.identity();
-    
-    // Calculate and apply pitch
-    cameraHolder.quaternion.setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0)
-        .applyQuaternion(baseQuat)
-        .applyQuaternion(new THREE.Quaternion().setFromAxisAngle(currentNormal, cameraRotation.y))
-        .normalize(), 
-      cameraRotation.x
-    );
-    
-    localPlayerMesh.quaternion.identity();
-  } else {
-    // Simplified in-air orientation
-    localPlayerObject.quaternion.identity()
-      .multiply(new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 1, 0), cameraRotation.y
-      ));
-    
-    cameraHolder.quaternion.setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0), cameraRotation.x
-    );
-    
-    localPlayerMesh.quaternion.identity();
-  }
+  // Apply pitch rotation (x-axis)
+  cameraHolder.quaternion.setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0),
+    cameraRotation.x
+  );
+}
+
+// Helper function to align object with surface normal
+function alignWithSurface(object, upVector, rotation) {
+  // Calculate forward direction from camera rotation (yaw only)
+  const forwardDir = new THREE.Vector3(
+    Math.sin(rotation.y),
+    0,
+    Math.cos(rotation.y)
+  ).normalize();
+  
+  // Calculate right vector (cross product of world up and forward)
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const rightVector = new THREE.Vector3().crossVectors(forwardDir, worldUp).normalize();
+  
+  // Recalculate real forward vector (cross product of up and right)
+  const realForward = new THREE.Vector3().crossVectors(rightVector, upVector).normalize();
+  
+  // Create rotation matrix
+  const rotMatrix = new THREE.Matrix4().makeBasis(
+    rightVector,
+    upVector,
+    realForward.negate()
+  );
+  
+  // Apply rotation to object
+  object.quaternion.setFromRotationMatrix(rotMatrix);
 }
 
 // Box update function - was missing
@@ -334,26 +334,15 @@ function updateOtherPlayers() {
     });
     player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
     
-    // Apply orientation based on state
-    if (player.falling) {
-      player.mesh.quaternion.setFromEuler(
-        new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ')
-      );
-    } else {
-      const normalVector = new THREE.Vector3(
-        player.normal.x, player.normal.y, player.normal.z
-      ).normalize();
-      
-      const lookVector = new THREE.Vector3(
-        Math.sin(playerData.rot.y) * Math.cos(playerData.rot.x),
-        Math.sin(playerData.rot.x),
-        Math.cos(playerData.rot.y) * Math.cos(playerData.rot.x)
-      );
-      
-      player.mesh.quaternion.setFromRotationMatrix(
-        new THREE.Matrix4().lookAt(new THREE.Vector3(), lookVector, normalVector)
-      );
-    }
+    // Apply orientation based on surface normal
+    const upVector = new THREE.Vector3(
+      playerData.contactNormal?.x || playerData.normal.x,
+      playerData.contactNormal?.y || playerData.normal.y, 
+      playerData.contactNormal?.z || playerData.normal.z
+    ).normalize();
+    
+    // Use helper function to align with surface
+    alignWithSurface(player.mesh, upVector, playerData.rot);
   }
   
   // Clean up disconnected players
@@ -386,18 +375,22 @@ function animate() {
       falling: playerData.falling,
       height: height.toFixed(1),
       altitude: heightAboveSurface.toFixed(1),
-      ground: !playerData.falling ? "grounded" : "falling"
+      ground: !playerData.falling ? "grounded" : "falling",
+      normal: [
+        playerData.normal.x.toFixed(2),
+        playerData.normal.y.toFixed(2),
+        playerData.normal.z.toFixed(2)
+      ]
     })}`;
   }
   
   if (isPointerLocked.value && playerData) {
-    const normalVector = playerData && !playerData.falling 
-      ? new THREE.Vector3(
-          playerData.contactNormal?.x || playerData.normal.x,
-          playerData.contactNormal?.y || playerData.normal.y, 
-          playerData.contactNormal?.z || playerData.normal.z
-        ) 
-      : lastNormalVector;
+    // Send input including camera rotation
+    const normalVector = new THREE.Vector3(
+      playerData.normal.x,
+      playerData.normal.y,
+      playerData.normal.z
+    ).normalize();
     
     sendInput(cameraRotation, {
       x: normalVector.x,
