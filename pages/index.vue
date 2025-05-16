@@ -48,7 +48,12 @@ onMounted(async () => {
   const planetMesh = new THREE.Mesh(new THREE.SphereGeometry(planetRadius, 32, 32), new THREE.MeshStandardMaterial({ color: 0x2266cc }))
   scene.add(planetMesh)
   const planetBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.ball(planetRadius), planetBody)
+  // Increase planet friction to prevent sliding
+  world.createCollider(
+    RAPIER.ColliderDesc.ball(planetRadius)
+      .setFriction(5.0), // High friction value to prevent sliding
+    planetBody
+  )
 
   const playerHeight = 2, playerRadius = 0.5
   const playerMesh = new THREE.Mesh(
@@ -66,7 +71,7 @@ onMounted(async () => {
   world.createCollider(
     RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius)
       .setRestitution(0.1)
-      .setFriction(0.8),
+      .setFriction(2.0), // Increased player friction
     playerBody
   )
 
@@ -137,7 +142,14 @@ onMounted(async () => {
     if (falling) {
       const pos = playerBody.translation()
       const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      playerBody.addForce({ x: dir.x * 9.8, y: dir.y * 9.8, z: dir.z * 9.8 })
+      // Stronger gravity for the player to stay on the planet
+      playerBody.addForce({ x: dir.x * 19.6, y: dir.y * 19.6, z: dir.z * 19.6 })
+    } else {
+      // Apply a constant downward force when on the ground to prevent sliding off
+      const pos = playerBody.translation()
+      const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
+      // Apply a continuous force towards the planet's center
+      playerBody.addForce({ x: dir.x * 15, y: dir.y * 15, z: dir.z * 15 })
     }
 
     world.step()
@@ -162,11 +174,28 @@ onMounted(async () => {
     if (onGround && falling) { 
       falling = false
       
-      // Stabilize player orientation when landing - align capsule with normal
+      // Get the direction from player to planet center for proper alignment on landing
       const playerPos = playerBody.translation()
       const toPlanet = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z).normalize()
-      playerBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }) // Reset rotation
-      playerYaw = 0 // Reset yaw when landing
+      
+      // When landing, set the initial rotation to align with the planet surface
+      // but preserve any yaw the player had before landing
+      const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), toPlanet);
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(toPlanet, playerYaw);
+      const finalQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat);
+      
+      // Set the rigid body rotation to match our calculated orientation
+      playerBody.setRotation({
+        x: finalQuat.x,
+        y: finalQuat.y,
+        z: finalQuat.z,
+        w: finalQuat.w
+      });
+      
+      // Apply angular damping to prevent rolling
+      playerBody.setAngularDamping(0.99);
+      
+      // Keep the current playerYaw value instead of resetting it
     }
     if (!onGround && !falling) falling = true
 
@@ -181,7 +210,37 @@ onMounted(async () => {
       if (moveDir.length() > 0) {
         moveDir.normalize().applyAxisAngle(groundNormal, playerYaw)
         const tangent = moveDir.clone().projectOnPlane(groundNormal)
-        playerBody.addForce({ x: tangent.x * 10, y: tangent.y * 10, z: tangent.z * 10 }) // Changed from addImpulse to addForce with increased value
+        
+        // Check if we're on the planet
+        const playerPos = playerBody.translation()
+        const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z)
+        const distToPlanetCenter = toPlanetCenter.length()
+        const onPlanet = Math.abs(distToPlanetCenter - (planetRadius + playerHeight/2)) < 0.2
+        
+        // If on planet, add movement force in a way that follows the surface
+        if (onPlanet) {
+          // Adjust force to follow the curvature by applying it along the surface
+          playerBody.addForce({ 
+            x: tangent.x * 10, 
+            y: tangent.y * 10, 
+            z: tangent.z * 10 
+          })
+          
+          // Add a small force towards the planet center to counteract potential upward drift
+          const normalForce = toPlanetCenter.normalize().multiplyScalar(5);
+          playerBody.addForce({ 
+            x: normalForce.x, 
+            y: normalForce.y, 
+            z: normalForce.z 
+          })
+        } else {
+          // On other objects, use the regular movement
+          playerBody.addForce({ 
+            x: tangent.x * 10, 
+            y: tangent.y * 10, 
+            z: tangent.z * 10 
+          })
+        }
       }
       
       if (keys['Space']) {
@@ -206,43 +265,80 @@ onMounted(async () => {
     playerMesh.position.set(playerPos.x, playerPos.y, playerPos.z)
     
     if (!falling) {
-      const up = groundNormal.clone()
-      // Create a proper forward vector that respects the ground normal
-      const worldUp = new THREE.Vector3(0, 1, 0);
-      const axis = new THREE.Vector3().crossVectors(worldUp, up).normalize();
-      const angle = Math.acos(worldUp.dot(up));
+      // For grounded movement, we want:
+      // 1. The player's feet aligned with the surface normal
+      // 2. The entire player rotating with yaw (left/right input)
+      // 3. The camera pitching up/down like a neck
       
-      // Calculate the forward direction based on the player's yaw and surface normal
-      const forward = new THREE.Vector3(0, 0, -1);
-      if (angle > 0.01) { // Only apply rotation if the angle is significant
-        forward.applyAxisAngle(axis, angle);
+      // STEP 1: Determine the up vector (surface normal or direction to planet center)
+      let up = groundNormal.clone();
+      
+      // If we're on the planet, always use direction to center as up
+      const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z);
+      const onPlanet = toPlanetCenter.length() < planetRadius * 1.5;
+      if (onPlanet) {
+        up.copy(toPlanetCenter.normalize());
       }
-      forward.applyAxisAngle(up, playerYaw);
       
-      // Align player mesh with the ground normal
-      playerMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
-      playerMesh.rotateOnWorldAxis(up, playerYaw);
+      // STEP 2: Create the player's orientation
+      // First align with surface by rotating from world-up to surface-normal
+      const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
       
-      // Position camera at player's head position
+      // Then apply yaw rotation around the surface normal (up vector)
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, playerYaw);
+      
+      // Combine: first align with surface, then apply yaw rotation
+      const playerQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat);
+      
+      // STEP 3: Apply the rotation to both visual mesh and physics body
+      playerMesh.quaternion.copy(playerQuat);
+      
+      // Apply the same rotation to the physics body to ensure consistent behavior
+      playerBody.setRotation({
+        x: playerQuat.x, 
+        y: playerQuat.y, 
+        z: playerQuat.z, 
+        w: playerQuat.w
+      });
+      
+      // STEP 4: Calculate player's local coordinate system for camera placement
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat);
+      
+      // STEP 5: Position camera at player's head
+      const headPos = playerMesh.position.clone().add(
+        cameraOffset.clone().applyQuaternion(playerQuat)
+      );
+      camera.position.copy(headPos);
+      
+      // STEP 6: Set camera orientation
+      // Start with the player's orientation (includes alignment to surface + yaw)
+      camera.quaternion.copy(playerQuat);
+      
+      // Only add pitch rotation to the camera (not to the player)
+      // This rotates around the local right axis, like a neck
+      camera.rotateOnAxis(right, cameraPitch);
+    } else {
+      // When falling, handle differently
+      
+      // Create quaternion for the camera's orientation in free fall
+      const freefallQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(cameraPitch, cameraYaw, 0, 'YXZ')
+      );
+      
+      // Apply the rotation to the player mesh
+      playerMesh.quaternion.copy(new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(0, cameraYaw, 0, 'YXZ')
+      ));
+      
+      // Position camera at player's head using the same offset logic as on ground
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerMesh.quaternion)
       );
       camera.position.copy(headPos);
       
-      // Set camera's base orientation to align with the surface normal
-      const right = new THREE.Vector3().crossVectors(forward, up).normalize();
-      const cameraRotMatrix = new THREE.Matrix4().makeBasis(right, up, forward.clone().multiplyScalar(-1));
-      camera.quaternion.setFromRotationMatrix(cameraRotMatrix);
-      
-      // Apply the pitch rotation around the right axis
-      camera.rotateOnAxis(right, cameraPitch);
-    } else {
-      // When falling, the camera follows the player directly
-      camera.position.copy(playerMesh.position).add(new THREE.Vector3(0, playerHeight/2, 0))
-      camera.rotation.set(cameraPitch, cameraYaw, 0)
-      
-      // Update player mesh rotation to match camera in freefall
-      playerMesh.rotation.y = cameraYaw
+      // Set camera orientation based on freefallQuat
+      camera.quaternion.copy(freefallQuat);
     }
     
     // Update cube positions
