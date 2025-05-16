@@ -15,6 +15,10 @@ let planetCenter = new THREE.Vector3(0, 0, 0)
 let planetRadius = 100
 let playerDirection = new THREE.Vector3()
 let keyStates = {}
+let playerIsGrounded = false
+let playerRotationY = 0
+let eventQueue // Add event queue for collision detection
+let characterColliderId // Store the player collider's ID for collision detection
 
 // FPS character controller settings
 const characterControllerDesc = {
@@ -94,6 +98,9 @@ async function initPhysics() {
   // Create physics world with zero gravity (we'll apply spherical gravity manually)
   const gravity = { x: 0, y: 0, z: 0 };
   world = new RAPIER.World(gravity);
+  
+  // Create event queue for collision detection
+  eventQueue = new physics.EventQueue(true);
 }
 
 function createPlanet() {
@@ -104,22 +111,26 @@ function createPlanet() {
   planetMesh.receiveShadow = true
   scene.add(planetMesh)
   
-  // Create physics planet
+  // Create physics planet with appropriate friction
   const rigidBodyDesc = new physics.RigidBodyDesc(physics.RigidBodyType.Fixed)
   sphereBody = world.createRigidBody(rigidBodyDesc)
   
   const colliderDesc = new physics.ColliderDesc(new physics.Ball(planetRadius))
-    .setFriction(0.8)
+    .setFriction(1.0)
+    .setRestitution(0.1)
   world.createCollider(colliderDesc, sphereBody)
 }
 
 function createCharacterController() {
-  // Instead of using character controller, create a dynamic rigid body with a capsule shape
-  const startPosition = new THREE.Vector3(0, 0, planetRadius + characterControllerDesc.height);
+  // Start player far away from the planet to watch it fall
+  const spawnDistance = planetRadius * 5;
+  const startPosition = new THREE.Vector3(spawnDistance, 0, 0);
   
   // Create rigid body for character
   const rigidBodyDesc = new physics.RigidBodyDesc(physics.RigidBodyType.Dynamic)
-    .setTranslation(startPosition.x, startPosition.y, startPosition.z);
+    .setTranslation(startPosition.x, startPosition.y, startPosition.z)
+    .setCcdEnabled(true);
+  
   characterController = world.createRigidBody(rigidBodyDesc);
   
   // Create capsule collider for the character
@@ -127,10 +138,11 @@ function createCharacterController() {
   const capsuleCollider = new physics.ColliderDesc(
     new physics.Capsule(capsuleHeight/2, characterControllerDesc.radius)
   )
-    .setFriction(0.7)
+    .setFriction(1.0)
     .setDensity(1.0);
   
-  world.createCollider(capsuleCollider, characterController);
+  const collider = world.createCollider(capsuleCollider, characterController);
+  characterColliderId = collider.handle; // Store collider ID for later comparison
   
   // Create a visual representation of the character
   const capsuleGeometry = new THREE.CapsuleGeometry(
@@ -143,41 +155,84 @@ function createCharacterController() {
   capsuleMesh.castShadow = true;
   capsuleMesh.name = 'character';
   
-  // Add camera as a child of character mesh
+  // Create separate player rotation group
+  const playerGroup = new THREE.Group();
+  playerGroup.name = 'playerGroup';
+  playerGroup.add(capsuleMesh);
+  scene.add(playerGroup);
+  
+  // Add camera to a separate mount that only handles vertical rotation
   const cameraOffset = new THREE.Object3D();
   cameraOffset.position.set(0, characterControllerDesc.height * 0.7, 0);
   cameraOffset.name = 'cameraMount';
   capsuleMesh.add(cameraOffset);
   cameraOffset.add(camera);
-  
-  scene.add(capsuleMesh);
 }
 
 function updateCharacterDirection() {
-  // Get current position from rigid body instead of character controller
   const position = characterController.translation();
   const currentPos = new THREE.Vector3(position.x, position.y, position.z);
   
   // Calculate direction to planet center (gravity direction)
   const gravityDir = currentPos.clone().sub(planetCenter).normalize().negate();
   
-  // Create a rotation matrix that orients the character to the planet surface
-  const up = gravityDir.clone();
-  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
-  forward.sub(up.clone().multiplyScalar(up.dot(forward))).normalize();
-  const right = forward.clone().cross(up).normalize();
+  // Only apply gravity when falling
+  if (!playerIsGrounded) {
+    // Use normal Earth gravity (9.8) for a more realistic fall
+    const gravity = gravityDir.multiplyScalar(9.8);
+    characterController.addForce({ x: gravity.x, y: gravity.y, z: gravity.z }, true);
+    return;
+  }
   
-  // Build movement direction based on key states
-  playerDirection.set(0, 0, 0);
-  if (keyStates['KeyW']) playerDirection.add(forward);
-  if (keyStates['KeyS']) playerDirection.sub(forward);
-  if (keyStates['KeyA']) playerDirection.sub(right);
-  if (keyStates['KeyD']) playerDirection.add(right);
-  playerDirection.normalize();
+  // When grounded, we don't use physics forces for movement
+  // Instead we'll use direct kinematic positioning
+  // For grounded player, ensure they stay locked to the surface by applying a small
+  // gravity force even when grounded
+  const surfaceGravity = gravityDir.multiplyScalar(5.0);
+  characterController.addForce({ x: surfaceGravity.x, y: surfaceGravity.y, z: surfaceGravity.z }, true);
   
-  // Apply spherical gravity to rigid body
-  const gravity = gravityDir.multiplyScalar(9.8);
-  characterController.addForce({ x: gravity.x, y: gravity.y, z: gravity.z }, true);
+  // For grounded player, movement is along the surface
+  const characterMesh = scene.getObjectByName('character');
+  const playerGroup = scene.getObjectByName('playerGroup');
+  
+  if (characterMesh && playerGroup) {
+    // Use player rotation for forward/back movement
+    const forward = new THREE.Vector3(0, 0, 1);
+    forward.applyQuaternion(playerGroup.quaternion);
+    forward.sub(gravityDir.clone().multiplyScalar(gravityDir.dot(forward))).normalize();
+    
+    // Get right vector for strafing
+    const right = forward.clone().cross(gravityDir.clone().negate()).normalize();
+    
+    // Build movement direction based on key states
+    playerDirection.set(0, 0, 0);
+    if (keyStates['KeyW']) playerDirection.add(forward);
+    if (keyStates['KeyS']) playerDirection.sub(forward);
+    if (keyStates['KeyA']) playerDirection.sub(right);
+    if (keyStates['KeyD']) playerDirection.add(right);
+    playerDirection.normalize();
+  }
+}
+
+function lockPlayerToSurface() {
+  if (!playerIsGrounded) return;
+  
+  const position = characterController.translation();
+  const currentPos = new THREE.Vector3(position.x, position.y, position.z);
+  
+  // Get direction from center to current position
+  const dirFromCenter = currentPos.clone().sub(planetCenter).normalize();
+  
+  // Set new position at exact distance from planet center
+  const distanceFromSurface = characterControllerDesc.height / 2;
+  const newPos = dirFromCenter.clone().multiplyScalar(planetRadius + distanceFromSurface);
+  
+  // Update rigid body position
+  characterController.setTranslation(newPos);
+  
+  // Reset velocity when locked to surface - player movement will be fully kinematic
+  characterController.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  characterController.setAngvel({ x: 0, y: 0, z: 0 }, true);
 }
 
 function handleKeyDown(event) {
@@ -189,10 +244,35 @@ function handleKeyUp(event) {
 }
 
 function handleMouseMove(event) {
-  if (document.pointerLockElement) {
-    camera.rotation.y -= event.movementX * 0.002
-    camera.rotation.x -= event.movementY * 0.002
-    camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x))
+  if (!document.pointerLockElement) return;
+  
+  // Vertical rotation only affects camera pitch
+  camera.rotation.x -= event.movementY * 0.002;
+  camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+  
+  // Horizontal rotation affects the whole player
+  if (playerIsGrounded) {
+    playerRotationY -= event.movementX * 0.002;
+    const playerGroup = scene.getObjectByName('playerGroup');
+    if (playerGroup) {
+      // Need to recalculate orientation on the sphere
+      const position = characterController.translation();
+      const currentPos = new THREE.Vector3(position.x, position.y, position.z);
+      const up = currentPos.clone().sub(planetCenter).normalize();
+      
+      // Create a rotation that first aligns with the surface normal
+      // and then applies the player's yaw rotation around that normal
+      const alignQuat = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), up
+      );
+      
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0), playerRotationY
+      );
+      
+      // Apply alignQuat first, then yawQuat
+      playerGroup.quaternion.copy(yawQuat).premultiply(alignQuat);
+    }
   }
 }
 
@@ -207,45 +287,90 @@ function animate() {
   
   const deltaTime = clock.getDelta();
   
-  // Update physics
+  // Update physics direction and forces
   updateCharacterDirection();
   
-  // Character movement - apply forces for movement
-  if (playerDirection.lengthSq() > 0) {
-    const moveSpeed = 50.0; // Increased force for movement
-    characterController.addForce(
-      { 
-        x: playerDirection.x * moveSpeed, 
-        y: playerDirection.y * moveSpeed, 
-        z: playerDirection.z * moveSpeed 
-      }, 
-      true
-    );
+  // Process collision events
+  processCollisionEvents();
+  
+  // When grounded, the player is fully controlled kinematically
+  if (playerIsGrounded) {
+    // Always lock to surface when grounded
+    lockPlayerToSurface();
+    
+    // Handle player movement
+    if (playerDirection.lengthSq() > 0) {
+      const moveSpeed = 5.0 * deltaTime;
+      const moveVector = playerDirection.clone().multiplyScalar(moveSpeed);
+      
+      const position = characterController.translation();
+      const currentPos = new THREE.Vector3(position.x, position.y, position.z);
+      
+      // Calculate new position with movement
+      currentPos.add(moveVector);
+      
+      // Project back to sphere surface
+      const dirFromCenter = currentPos.clone().sub(planetCenter).normalize();
+      const newPos = dirFromCenter.multiplyScalar(planetRadius + (characterControllerDesc.height / 2));
+      
+      // Directly set new position (kinematic control)
+      characterController.setTranslation(newPos);
+    }
   }
   
-  world.step();
+  // Always step the physics world and collect events
+  world.step(eventQueue);
   
   // Update character visual position and rotation
   const characterMesh = scene.getObjectByName('character');
-  if (characterMesh) {
+  const playerGroup = scene.getObjectByName('playerGroup');
+  
+  if (characterMesh && playerGroup) {
     const position = characterController.translation();
-    characterMesh.position.set(position.x, position.y, position.z);
+    playerGroup.position.set(position.x, position.y, position.z);
     
-    // Align character with planet surface
-    const toCenter = new THREE.Vector3(position.x, position.y, position.z).sub(planetCenter).normalize();
-    const up = toCenter.clone();
-    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
-    forward.sub(up.clone().multiplyScalar(up.dot(forward))).normalize();
-    const quat = new THREE.Quaternion().setFromRotationMatrix(
-      new THREE.Matrix4().lookAt(new THREE.Vector3(), forward, up)
-    );
-    characterMesh.quaternion.copy(quat);
-    
-    // Also update the rigid body rotation to match the mesh
-    characterController.setRotation(quat);
+    // Only update character rotation if not grounded
+    // If grounded, rotation is handled by mouse movement
+    if (!playerIsGrounded) {
+      // Align character with planet surface
+      const toCenter = new THREE.Vector3(position.x, position.y, position.z).sub(planetCenter).normalize();
+      const up = toCenter.clone();
+      const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
+      forward.sub(up.clone().multiplyScalar(up.dot(forward))).normalize();
+      const quat = new THREE.Quaternion().setFromRotationMatrix(
+        new THREE.Matrix4().lookAt(new THREE.Vector3(), forward, up)
+      );
+      characterMesh.quaternion.copy(quat);
+      characterController.setRotation(quat);
+    }
   }
   
   renderer.render(scene, camera);
+}
+
+// New function to process collision events
+function processCollisionEvents() {
+  // Skip if already grounded
+  if (playerIsGrounded) return;
+  
+  // Process all collision events
+  eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+    // Check if one of the colliders is the player
+    if (handle1 === characterColliderId || handle2 === characterColliderId) {
+      if (started) {
+        console.log("Player collision detected");
+        
+        // Player has landed on the planet
+        playerIsGrounded = true;
+        
+        // Switch to kinematic mode
+        characterController.setBodyType(physics.RigidBodyType.KinematicPositionBased);
+        
+        // Lock player to surface
+        lockPlayerToSurface();
+      }
+    }
+  });
 }
 </script>
 
