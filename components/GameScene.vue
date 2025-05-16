@@ -14,29 +14,21 @@ const container = ref(null);
 const gameStore = useGameStore();
 const isPointerLocked = ref(false);
 
-// Three.js variables
 let scene, camera, renderer, animationFrameId;
 let cameraRotation = { x: 0, y: 0 };
-
-// Game objects
 const playerMeshes = new Map();
 const staticBoxMeshes = new Map();
 const movingBoxMeshes = new Map();
 let localPlayerObject, localPlayerMesh;
-
-// Add these new variables near the top of the script, with other state variables
-let lastNormalVector = new THREE.Vector3(0, 1, 0);  // Default up
+let lastNormalVector = new THREE.Vector3(0, 1, 0);
 
 onMounted(() => {
-  // Connect to server
   gameStore.connectToServer();
-  
   if (!container.value) return;
   
   // Scene setup
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000020);
-  
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -44,36 +36,28 @@ onMounted(() => {
   renderer.setPixelRatio(window.devicePixelRatio);
   container.value.appendChild(renderer.domElement);
   
-  // Lighting
+  // Add lights
   scene.add(new THREE.AmbientLight(0x404040));
-  
-  const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-  directionalLight.position.set(0, 1, 0);
-  scene.add(directionalLight);
+  scene.add(new THREE.DirectionalLight(0xffffff, 1).translateY(1));
   
   // Create planet
-  const planet = new THREE.Mesh(
+  scene.add(new THREE.Mesh(
     new THREE.SphereGeometry(gameStore.planetRadius, 32, 32),
     new THREE.MeshStandardMaterial({ color: 0x5555ff, roughness: 0.8, metalness: 0.2 })
-  );
-  scene.add(planet);
+  ));
   
-  // Create a static box platform - make it larger and positioned higher
-  const boxSize = { width: 30, height: 3, depth: 30 }; // Larger box
-  const boxPosition = { x: 0, y: gameStore.planetRadius + 30, z: 0 }; // Higher position
-  const boxGeometry = new THREE.BoxGeometry(boxSize.width, boxSize.height, boxSize.depth);
-  const boxMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0xFF8C00, // Brighter orange color for visibility
-    roughness: 0.7, 
-    metalness: 0.2,
-    emissive: 0x331400, // Add slight glow
-    emissiveIntensity: 0.2
-  });
-  const box = new THREE.Mesh(boxGeometry, boxMaterial);
-  box.position.set(boxPosition.x, boxPosition.y, boxPosition.z);
+  // Create main platform
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(30, 3, 30),
+    new THREE.MeshStandardMaterial({ 
+      color: 0xFF8C00, roughness: 0.7, metalness: 0.2,
+      emissive: 0x331400, emissiveIntensity: 0.2
+    })
+  );
+  box.position.set(0, gameStore.planetRadius + 30, 0);
   scene.add(box);
   
-  // Create local player object and mesh
+  // Create player
   localPlayerObject = new THREE.Group();
   scene.add(localPlayerObject);
   
@@ -85,26 +69,23 @@ onMounted(() => {
   
   // Camera setup
   const cameraHolder = new THREE.Object3D();
-  cameraHolder.position.set(0, 0.7, 0);
+  cameraHolder.position.y = 0.7;
   localPlayerObject.add(cameraHolder);
   cameraHolder.add(camera);
   
-  // Event setup
+  // Init position
+  localPlayerObject.position.set(0, gameStore.planetRadius + 50, 0);
+  
+  // Events
   container.value.addEventListener('click', requestPointerLock);
   setupEventListeners();
-  
-  // Initial position - updated to match server's higher spawn point
-  localPlayerObject.position.set(0, gameStore.planetRadius + 50, 0);
   
   animate();
 });
 
 onUnmounted(() => {
   cancelAnimationFrame(animationFrameId);
-  
-  // Remove event listeners
   document.removeEventListener('pointerlockchange', handlePointerLockChange);
-  document.removeEventListener('pointerlockerror', handlePointerLockError);
   document.removeEventListener('mousemove', handleMouseMove);
   window.removeEventListener('resize', handleResize);
   window.removeEventListener('keydown', handleKeyDown);
@@ -117,7 +98,6 @@ onUnmounted(() => {
 
 function setupEventListeners() {
   document.addEventListener('pointerlockchange', handlePointerLockChange);
-  document.addEventListener('pointerlockerror', handlePointerLockError);
   document.addEventListener('mousemove', handleMouseMove);
   window.addEventListener('resize', handleResize);
   window.addEventListener('keydown', handleKeyDown);
@@ -127,9 +107,7 @@ function setupEventListeners() {
 function requestPointerLock() {
   container.value.requestPointerLock = 
     container.value.requestPointerLock || 
-    container.value.mozRequestPointerLock || 
-    container.value.webkitRequestPointerLock;
-    
+    container.value.mozRequestPointerLock;
   container.value.requestPointerLock();
 }
 
@@ -137,13 +115,7 @@ function handlePointerLockChange() {
   isPointerLocked.value = document.pointerLockElement === container.value;
 }
 
-function handlePointerLockError() {
-  console.error('Pointer lock error');
-}
-
 function handleResize() {
-  if (!camera || !renderer) return;
-  
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -164,204 +136,125 @@ function handleKeyUp(e) {
 function handleMouseMove(event) {
   if (!isPointerLocked.value) return;
   
-  // Update camera rotation with sensitivity
   cameraRotation.x -= event.movementY * 0.002;
   cameraRotation.y -= event.movementX * 0.002;
-  
-  // Limit vertical rotation
   cameraRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraRotation.x));
 }
 
-// Track last player position - but simpler
-let lastPlayerPosition = null;
-
 function updateCameraOrientation() {
   const playerData = gameStore.getMyPlayerData();
-  if (!playerData || !localPlayerMesh) return;
+  if (!playerData) return;
   
-  // Set exact position values - no interpolation
-  localPlayerObject.position.set(
-    playerData.pos.x,
-    playerData.pos.y,
-    playerData.pos.z
-  );
+  // Set position
+  localPlayerObject.position.copy(new THREE.Vector3(
+    playerData.pos.x, playerData.pos.y, playerData.pos.z
+  ));
   
-  // Create a normalized normal vector - direct use without smoothing
+  // Get current orientation data
   const currentNormal = new THREE.Vector3(
-    playerData.normal.x,
-    playerData.normal.y,
-    playerData.normal.z
+    playerData.normal.x, playerData.normal.y, playerData.normal.z
   ).normalize();
-  
-  // Always update the reference normal directly - no time-based smoothing
   lastNormalVector.copy(currentNormal);
   
   const cameraHolder = camera.parent;
   
-  // Non-falling state (on ground or object)
+  // Apply orientations based on player state
   if (!playerData.falling) {
-    // Align player immediately with current surface normal
+    // On ground
     if (playerData.onBox && !playerData.onStaticBox && !playerData.onMovingBox) {
-      // For main floating box, use world up
       localPlayerObject.quaternion.identity();
     } else {
-      // For planet surface or surface boxes, align directly with normal
       localPlayerObject.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        currentNormal
+        new THREE.Vector3(0, 1, 0), currentNormal
       );
     }
     
-    // Keep camera fixed relative to player
+    // Reset and apply camera rotations
     cameraHolder.quaternion.identity();
-    
-    // Apply camera rotations
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 1, 0),
-      cameraRotation.y
+      new THREE.Vector3(0, 1, 0), cameraRotation.y
     );
-    
     const pitchQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0),
-      cameraRotation.x
+      new THREE.Vector3(1, 0, 0), cameraRotation.x
     );
     
-    // Apply in the correct order: yaw first then pitch
     cameraHolder.quaternion.multiply(yawQuat).multiply(pitchQuat);
-    
-    // Apply only yaw to player mesh for visual direction
     localPlayerMesh.quaternion.copy(yawQuat);
   } else {
-    // Falling state - direct orientation
+    // In air
     localPlayerObject.quaternion.identity();
     
-    // Apply yaw to player body
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 1, 0),
-      cameraRotation.y
+      new THREE.Vector3(0, 1, 0), cameraRotation.y
     );
     localPlayerObject.quaternion.multiply(yawQuat);
     
-    // Apply pitch to camera
-    cameraHolder.quaternion.identity();
     cameraHolder.quaternion.setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0),
-      cameraRotation.x
+      new THREE.Vector3(1, 0, 0), cameraRotation.x
     );
     
     localPlayerMesh.quaternion.identity();
   }
-  
-  // Store position for next frame if needed
-  if (!lastPlayerPosition) {
-    lastPlayerPosition = new THREE.Vector3();
-  }
-  lastPlayerPosition.set(
-    playerData.pos.x,
-    playerData.pos.y,
-    playerData.pos.z
-  );
 }
 
 function updateBoxes() {
   if (!gameStore.lastServerState) return;
   
   // Update static boxes
-  if (gameStore.lastServerState.staticBoxes) {
-    const boxes = gameStore.lastServerState.staticBoxes;
-    
-    // Create or update static boxes
-    for (const boxData of boxes) {
-      if (!staticBoxMeshes.has(boxData.id)) {
-        // Create new box mesh
-        const boxGeometry = new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth);
-        const boxMaterial = new THREE.MeshStandardMaterial({ 
-          color: 0x2ecc71, // Green color for static boxes
-          roughness: 0.6,
-          metalness: 0.2
-        });
-        
-        const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
-        scene.add(boxMesh);
-        
-        staticBoxMeshes.set(boxData.id, {
-          mesh: boxMesh,
-          data: { ...boxData }
-        });
-      }
-      
-      // Update box position and rotation
-      const box = staticBoxMeshes.get(boxData.id);
-      box.data = { ...boxData };
-      
-      // Update mesh position
-      box.mesh.position.set(
-        boxData.position.x,
-        boxData.position.y,
-        boxData.position.z
+  for (const boxData of gameStore.getStaticBoxes()) {
+    if (!staticBoxMeshes.has(boxData.id)) {
+      // Create new box
+      const boxMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth),
+        new THREE.MeshStandardMaterial({ 
+          color: 0x2ecc71, roughness: 0.6, metalness: 0.2
+        })
       );
-      
-      // Calculate normal at this position on the planet
-      const normal = new THREE.Vector3(
-        boxData.position.x,
-        boxData.position.y,
-        boxData.position.z
-      ).normalize();
-      
-      // Orient box to face away from planet center
-      const upVector = new THREE.Vector3(0, 1, 0);
-      box.mesh.quaternion.setFromUnitVectors(upVector, normal);
+      scene.add(boxMesh);
+      staticBoxMeshes.set(boxData.id, { mesh: boxMesh, data: { ...boxData } });
     }
+    
+    // Update position and orientation
+    const box = staticBoxMeshes.get(boxData.id);
+    box.data = { ...boxData };
+    box.mesh.position.set(
+      boxData.position.x, boxData.position.y, boxData.position.z
+    );
+    
+    const normal = new THREE.Vector3(
+      boxData.position.x, boxData.position.y, boxData.position.z
+    ).normalize();
+    
+    box.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
   }
   
   // Update moving boxes
-  if (gameStore.lastServerState.movingBoxes) {
-    const boxes = gameStore.lastServerState.movingBoxes;
-    
-    // Create or update moving boxes
-    for (const boxData of boxes) {
-      if (!movingBoxMeshes.has(boxData.id)) {
-        // Create new box mesh
-        const boxGeometry = new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth);
-        const boxMaterial = new THREE.MeshStandardMaterial({ 
-          color: 0xe74c3c, // Red color for moving boxes
-          roughness: 0.6,
-          metalness: 0.2,
-          emissive: 0x300000, // Slight red glow
-          emissiveIntensity: 0.2
-        });
-        
-        const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
-        scene.add(boxMesh);
-        
-        movingBoxMeshes.set(boxData.id, {
-          mesh: boxMesh,
-          data: { ...boxData }
-        });
-      }
-      
-      // Update box position and rotation
-      const box = movingBoxMeshes.get(boxData.id);
-      box.data = { ...boxData };
-      
-      // Update mesh position
-      box.mesh.position.set(
-        boxData.position.x,
-        boxData.position.y,
-        boxData.position.z
+  for (const boxData of gameStore.getMovingBoxes()) {
+    if (!movingBoxMeshes.has(boxData.id)) {
+      // Create new box
+      const boxMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(boxData.width, boxData.height, boxData.depth),
+        new THREE.MeshStandardMaterial({ 
+          color: 0xe74c3c, roughness: 0.6, metalness: 0.2,
+          emissive: 0x300000, emissiveIntensity: 0.2
+        })
       );
-      
-      // Calculate normal at this position on the planet
-      const normal = new THREE.Vector3(
-        boxData.position.x,
-        boxData.position.y,
-        boxData.position.z
-      ).normalize();
-      
-      // Orient box to face away from planet center
-      const upVector = new THREE.Vector3(0, 1, 0);
-      box.mesh.quaternion.setFromUnitVectors(upVector, normal);
+      scene.add(boxMesh);
+      movingBoxMeshes.set(boxData.id, { mesh: boxMesh, data: { ...boxData } });
     }
+    
+    // Update position and orientation
+    const box = movingBoxMeshes.get(boxData.id);
+    box.data = { ...boxData };
+    box.mesh.position.set(
+      boxData.position.x, boxData.position.y, boxData.position.z
+    );
+    
+    const normal = new THREE.Vector3(
+      boxData.position.x, boxData.position.y, boxData.position.z
+    ).normalize();
+    
+    box.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
   }
 }
 
@@ -371,7 +264,7 @@ function updateOtherPlayers() {
   const seenIds = new Set();
   
   for (const playerData of gameStore.lastServerState.players) {
-    if (playerData.id === gameStore.myId) continue; // Skip early
+    if (playerData.id === gameStore.myId) continue;
     seenIds.add(playerData.id);
     
     if (!playerMeshes.has(playerData.id)) {
@@ -381,38 +274,30 @@ function updateOtherPlayers() {
         new THREE.MeshStandardMaterial({ color: 0xff0000 })
       );
       scene.add(playerMesh);
-      
       playerMeshes.set(playerData.id, {
         mesh: playerMesh,
         pos: { ...playerData.pos },
         rot: { ...playerData.rot },
-        normal: { ...(playerData.normal || { x: 0, y: 1, z: 0 }) },
-        falling: playerData.falling || false,
-        targetPos: { ...playerData.pos },
-        targetRot: { ...playerData.rot },
-        targetNormal: { ...(playerData.normal || { x: 0, y: 1, z: 0 }) }
+        normal: { ...playerData.normal },
+        falling: playerData.falling
       });
     }
     
-    // Update player data
+    // Update player
     const player = playerMeshes.get(playerData.id);
     
-    // Use direct setting for position instead of interpolation
-    player.pos.x = playerData.pos.x;
-    player.pos.y = playerData.pos.y;
-    player.pos.z = playerData.pos.z;
-    player.normal.x = playerData.normal.x;
-    player.normal.y = playerData.normal.y;
-    player.normal.z = playerData.normal.z;
+    // Update position and state
+    player.pos = { ...playerData.pos };
+    player.normal = { ...playerData.normal };
     player.falling = playerData.falling;
-    
-    // Update mesh position - no interpolation
     player.mesh.position.set(player.pos.x, player.pos.y, player.pos.z);
     
+    // Apply orientation
     if (player.falling) {
-      player.mesh.quaternion.setFromEuler(new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ'));
+      player.mesh.quaternion.setFromEuler(
+        new THREE.Euler(playerData.rot.x, playerData.rot.y, 0, 'YXZ')
+      );
     } else {
-      // Orient to surface - direct setting, no slerp
       const normalVector = new THREE.Vector3(
         player.normal.x, player.normal.y, player.normal.z
       ).normalize();
@@ -423,13 +308,11 @@ function updateOtherPlayers() {
         Math.cos(playerData.rot.y) * Math.cos(playerData.rot.x)
       );
       
-      const matrix = new THREE.Matrix4().lookAt(
-        new THREE.Vector3(0, 0, 0),
-        lookVector,
-        normalVector
+      player.mesh.quaternion.setFromRotationMatrix(
+        new THREE.Matrix4().lookAt(
+          new THREE.Vector3(), lookVector, normalVector
+        )
       );
-      
-      player.mesh.quaternion.setFromRotationMatrix(matrix);
     }
   }
   
@@ -445,46 +328,22 @@ function updateOtherPlayers() {
 function animate() {
   animationFrameId = requestAnimationFrame(animate);
   
-  // Simplified player position tracking - just set previous positions directly
-  if (gameStore.lastServerState) {
-    for (const playerData of gameStore.lastServerState.players) {
-      if (!playerMeshes.has(playerData.id)) {
-        playerMeshes.set(playerData.id, {
-          prevPos: { x: playerData.pos.x, y: playerData.pos.y, z: playerData.pos.z },
-        });
-      } else {
-        // Direct update of previous position - no smoothing
-        const playerMesh = playerMeshes.get(playerData.id);
-        if (playerMesh.prevPos) {
-          playerMesh.prevPos.x = playerData.pos.x;
-          playerMesh.prevPos.y = playerData.pos.y;
-          playerMesh.prevPos.z = playerData.pos.z;
-        }
-      }
-    }
-  }
-  
   if (isPointerLocked.value && gameStore.getMyPlayerData()) {
-    // Send input with camera rotation AND current surface normal for jump direction
     const playerData = gameStore.getMyPlayerData();
     const normalVector = playerData && !playerData.falling ? 
-      new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z).normalize() : 
+      new THREE.Vector3(playerData.normal.x, playerData.normal.y, playerData.normal.z) : 
       lastNormalVector;
     
-    // Convert THREE.Vector3 to simple object for transport
-    const normalForJump = {
+    gameStore.sendInput(cameraRotation, {
       x: normalVector.x,
       y: normalVector.y,
       z: normalVector.z
-    };
-    
-    // Send both camera rotation and the normal vector
-    gameStore.sendInput(cameraRotation, normalForJump);
+    });
   }
   
   updateCameraOrientation();
   updateOtherPlayers();
-  updateBoxes(); // Add call to update boxes
+  updateBoxes();
   
   renderer.render(scene, camera);
 }

@@ -31,7 +31,6 @@ export const useGameStore = defineStore('game', {
         if (message.type === 'init') {
           this.myId = message.data.id;
           this.planetRadius = message.data.planetRadius;
-          console.log('Initialized with ID:', this.myId);
         } 
         else if (message.type === 'state') {
           this.previousServerState = this.lastServerState;
@@ -40,27 +39,20 @@ export const useGameStore = defineStore('game', {
       };
       
       this.ws.onclose = () => {
-        console.log('Disconnected from server');
         this.isConnected = false;
         setTimeout(() => this.connectToServer(), 3000);
       };
-      
-      this.ws.onerror = error => console.error('WebSocket error:', error);
     },
     
-    sendInput(cameraRotation, normalVector) {
+    sendInput(cameraRotation, normalVector) { 
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       
-      // Create input message with keys, rotation, and normal vector
-      const inputMessage = {
+      this.ws.send(JSON.stringify({
         type: 'input',
         keys: { ...this.keys },
         rotation: { ...cameraRotation },
-        normal: normalVector  // Include surface normal for jump direction
-      };
-      
-      // Send to server
-      this.ws.send(JSON.stringify(inputMessage));
+        normal: normalVector
+      }));
     },
     
     getMyPlayerData() {
