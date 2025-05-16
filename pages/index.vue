@@ -1,47 +1,37 @@
 <template>
-  <div id="scene-container"></div>
+  <canvas ref="canvas"></canvas>
 </template>
 
 <script setup>
-import { onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import * as THREE from 'three'
 import * as RAPIER from '@dimforge/rapier3d-compat'
 
-// Constants
 const GRAVITY_STRENGTH = 50
 const PLANET_RADIUS = 2
 const PLAYER_RADIUS = 0.5
 const PLAYER_HEIGHT = 2
 
-// Keep only essential objects as variables
-let renderer, scene, camera
-let physicsWorld, planetBody, playerBody
-let planetMesh, playerMesh
-let animationFrameId
+// Add ref for canvas
+const canvas = ref(null)
+let renderer, scene, camera, physicsWorld, planetBody, playerBody, planetMesh, playerMesh, animationFrameId
 
 onMounted(async () => {
-  // Initialize physics
   await RAPIER.init()
   
-  // Create Three.js scene
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x000000)
   
-  // Create camera
-  camera = new THREE.PerspectiveCamera(
-    75,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    1000
-  )
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
   camera.position.set(0, 15, 30)
   
-  // Create renderer
-  const container = document.getElementById('scene-container')
-  renderer = new THREE.WebGLRenderer({ antialias: true })
+  // Use the canvas ref directly
+  renderer = new THREE.WebGLRenderer({ 
+    canvas: canvas.value,
+    antialias: true 
+  })
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.setPixelRatio(window.devicePixelRatio)
-  container.appendChild(renderer.domElement)
   
   scene.add(new THREE.AmbientLight(0x404040))
   
@@ -51,23 +41,19 @@ onMounted(async () => {
   
   physicsWorld = new RAPIER.World({ x: 0.0, y: 0.0, z: 0.0 })
   
-  // Create a planet (gravity attractor)
   const planetRigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
   planetBody = physicsWorld.createRigidBody(planetRigidBodyDesc)
   
   const planetColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS)
   physicsWorld.createCollider(planetColliderDesc, planetBody)
   
-  // Create planet mesh
   const planetGeometry = new THREE.SphereGeometry(PLANET_RADIUS, 32, 32)
   const planetMaterial = new THREE.MeshStandardMaterial({ color: 0x1565c0 })
   planetMesh = new THREE.Mesh(planetGeometry, planetMaterial)
   scene.add(planetMesh)
   
-  // Create a player (will be attracted to the planet)
   const playerRigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
   
-  // Random position above the planet
   playerRigidBodyDesc.setTranslation((Math.random() - 0.5) * 20, 20, (Math.random() - 0.5) * 20);
   
   playerBody = physicsWorld.createRigidBody(playerRigidBodyDesc)
@@ -75,13 +61,11 @@ onMounted(async () => {
   const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS)
   physicsWorld.createCollider(playerColliderDesc, playerBody)
   
-  // Create player mesh
   const playerGeometry = new THREE.CapsuleGeometry(PLAYER_RADIUS, PLAYER_HEIGHT, 20, 20)
   const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xe53935 })
   playerMesh = new THREE.Mesh(playerGeometry, playerMaterial)
   scene.add(playerMesh)
   
-  // Start animation loop
   animate()
 })
 
@@ -93,11 +77,9 @@ onBeforeUnmount(() => {
 function applyPlanetGravity() {
   if (!playerBody || !planetBody) return
   
-  // Use Three.js Vector3 for cleaner vector math
   const playerPos = playerBody.translation()
   const planetPos = planetBody.translation()
   
-  // Create direction vector and calculate force in fewer steps
   const direction = new THREE.Vector3(
     planetPos.x - playerPos.x,
     planetPos.y - playerPos.y,
@@ -107,11 +89,9 @@ function applyPlanetGravity() {
   const distance = direction.length()
   if (distance === 0) return
   
-  // Normalize and calculate force in one go
   direction.normalize()
   const forceMagnitude = GRAVITY_STRENGTH / (distance * distance) * 0.01
   
-  // Apply scaled force vector directly
   playerBody.applyImpulse(
     { 
       x: direction.x * forceMagnitude,
@@ -125,13 +105,10 @@ function applyPlanetGravity() {
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
   
-  // Apply gravity between planet and player
   applyPlanetGravity()
   
-  // Step the physics world
   physicsWorld.step()
   
-  // Update mesh positions based on physics bodies
   if (planetBody && planetMesh) {
     const position = planetBody.translation()
     planetMesh.position.set(position.x, position.y, position.z)
@@ -150,12 +127,17 @@ function animate() {
 </script>
 
 <style scoped>
-  #scene-container {
-    position: fixed;
-    top: 0;
-    left: 0;
+  :global(html), :global(body) {
+    margin: 0;
+    padding: 0;
     width: 100%;
-    height: 100%;
+    height: 100vh;
     overflow: hidden;
+  }
+  
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100vh;
   }
 </style>
