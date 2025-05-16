@@ -6,6 +6,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import * as THREE from 'three'
 import * as RAPIER from '@dimforge/rapier3d-compat'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
 const GRAVITY_STRENGTH = 50
 const PLANET_RADIUS = 2
@@ -24,6 +25,7 @@ const COLLISION_BUFFER = 0.05; // Extra buffer distance around objects
 // Add ref for canvas
 const canvas = ref(null)
 let renderer, scene, camera, physicsWorld, planetBody, planetMesh, animationFrameId
+let controls // Add controls variable
 
 // Arrays to store multiple players and random objects
 let playerBodies = []
@@ -87,6 +89,14 @@ onMounted(async () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.setPixelRatio(window.devicePixelRatio)
   
+  // Initialize orbit controls
+  controls = new OrbitControls(camera, canvas.value)
+  controls.enableDamping = true // Add smooth damping effect
+  controls.dampingFactor = 0.05
+  controls.screenSpacePanning = false
+  controls.minDistance = 5 // Minimum zoom distance
+  controls.maxDistance = 30 // Maximum zoom distance
+  
   scene.add(new THREE.AmbientLight(0x404040))
   
   const directionalLight = new THREE.DirectionalLight(0xffffff, 1)
@@ -126,12 +136,17 @@ onMounted(async () => {
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
   
+  // Add a helper to visualize the coordinate system
+  const axesHelper = new THREE.AxesHelper(5)
+  scene.add(axesHelper)
+  
   animate()
 })
 
 onBeforeUnmount(() => {
   if (animationFrameId) cancelAnimationFrame(animationFrameId);
   if (renderer) renderer.dispose()
+  if (controls) controls.dispose() // Clean up controls
   
   // Remove keyboard event listeners
   window.removeEventListener('keydown', handleKeyDown)
@@ -711,6 +726,9 @@ function animate() {
   // Move player after physics step
   movePlayer();
   
+  // Update orbit controls
+  controls.update();
+  
   // Update planet position
   if (planetBody && planetMesh) {
     const position = planetBody.translation()
@@ -761,6 +779,26 @@ function animate() {
   
   renderer.render(scene, camera)
 }
+
+// Add a function to handle window resizing
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight
+  camera.updateProjectionMatrix()
+  renderer.setSize(window.innerWidth, window.innerHeight)
+}
+
+// Add resize event listener in onMounted
+onMounted(() => {
+  // ...existing code...
+  
+  window.addEventListener('resize', onWindowResize)
+})
+
+onBeforeUnmount(() => {
+  // ...existing code...
+  
+  window.removeEventListener('resize', onWindowResize)
+})
 
 // Add this function to retrieve a player's collider handle by index
 function getPlayerColliderHandle(playerIndex) {
