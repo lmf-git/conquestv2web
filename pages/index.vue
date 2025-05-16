@@ -106,21 +106,24 @@ onMounted(async () => {
   playerMesh.castShadow = true
   scene.add(playerMesh)
   
+  // Create player body as kinematic instead of dynamic
   const playerBody = world.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic()
+    RAPIER.RigidBodyDesc.kinematicPositionBased()
       .setTranslation(0, planetRadius + 10, 0)
   )
   
   world.createCollider(
     RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius)
       .setRestitution(0.1)
-      .setFriction(5.0), // Increased friction from 2.0 to 5.0 to reduce sliding
+      .setFriction(5.0),
     playerBody
   )
   
-  // Set higher damping values to reduce sliding
-  playerBody.setLinearDamping(0.5);
-  playerBody.setAngularDamping(0.99);
+  // We won't need damping for kinematic bodies, but we'll set it for when we switch to dynamic
+  const playerDynamicSettings = {
+    linearDamping: 0.5,
+    angularDamping: 0.99
+  }
 
   // Create a head position for the camera
   const cameraOffset = new THREE.Vector3(0, playerHeight / 2 - playerRadius, 0)
@@ -266,6 +269,9 @@ onMounted(async () => {
 
   let falling = true, cameraPitch = 0, cameraYaw = 0, playerYaw = 0
   
+  // Add velocity tracking for jumps and falls
+  let playerVelocity = new THREE.Vector3(0, 0, 0)
+  
   const keys = {}
   window.addEventListener('keydown', e => keys[e.code] = true)
   window.addEventListener('keyup', e => keys[e.code] = false)
@@ -363,287 +369,235 @@ onMounted(async () => {
       }
     })
     
-    if (falling) {
-      const pos = playerBody.translation()
-      const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      playerBody.addForce({ x: dir.x * 35, y: dir.y * 35, z: dir.z * 35 })
-    } else {
-      const pos = playerBody.translation()
-      const dir = new THREE.Vector3(-pos.x, -pos.y, -pos.z).normalize()
-      playerBody.addForce({ x: dir.x * 30, y: dir.y * 30, z: dir.z * 30 })
-    }
-
-    world.step()
-
-    let onGround = false, groundNormal = new THREE.Vector3(0, 1, 0)
-    const playerBodyHandle = playerBody.handle
-    
-    // Check for ground contact
-    for (let i = 0; i < world.bodies.length; i++) {
-      if (world.bodies[i].handle !== playerBodyHandle) {
-        for (let contact of world.contactsWith(playerBodyHandle)) {
-          if (contact.dist <= 0.05) {
-            onGround = true
-            groundNormal.set(contact.normal.x, contact.normal.y, contact.normal.z)
-            break
-          }
-        }
-      }
-      if (onGround) break
-    }
-    
-    if (onGround && falling) { 
-      falling = false
-      
-      // Get the direction from player to planet center for proper alignment on landing
-      const playerPos = playerBody.translation()
-      const toPlanet = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z).normalize()
-      
-      // When landing, set the initial rotation to align with the planet surface
-      // but preserve any yaw the player had before landing
-      const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), toPlanet);
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(toPlanet, playerYaw);
-      const finalQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat);
-      
-      // Set the rigid body rotation to match our calculated orientation
-      playerBody.setRotation({
-        x: finalQuat.x,
-        y: finalQuat.y,
-        z: finalQuat.z,
-        w: finalQuat.w
-      });
-      
-      // Apply angular damping to prevent rolling
-      playerBody.setAngularDamping(0.99);
-    }
-    if (!onGround && !falling) falling = true
-
-    // Handle movement based on keys
-    if (!falling) {
-      let moveDir = new THREE.Vector3(
-        (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
-        0,
-        (keys['KeyS'] ? 1 : 0) - (keys['KeyW'] ? 1 : 0)
-      )
-      
-      if (moveDir.length() > 0) {
-        // Apply a negative yaw to fix the inversion problem
-        moveDir.normalize().applyAxisAngle(groundNormal, -playerYaw)
-        const tangent = moveDir.clone().projectOnPlane(groundNormal)
-        
-        // Check if we're on the planet
-        const playerPos = playerBody.translation()
-        const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z)
-        const distToPlanetCenter = toPlanetCenter.length()
-        const onPlanet = Math.abs(distToPlanetCenter - (planetRadius + playerHeight/2)) < 0.2
-        
-        // Get current linear velocity
-        const vel = playerBody.linvel();
-        const currentVelocity = new THREE.Vector3(vel.x, vel.y, vel.z);
-        
-        if (onPlanet) {
-          // Calculate target velocity for movement (faster than before for responsive feel)
-          const moveSpeed = 5.0; // Units per second
-          const targetVelocity = tangent.clone().multiplyScalar(moveSpeed);
-          
-          // Calculate the velocity change needed
-          // This directly sets the velocity rather than just applying a force
-          const velocityChange = new THREE.Vector3();
-          velocityChange.subVectors(targetVelocity, currentVelocity.projectOnPlane(groundNormal));
-          
-          // Apply impulse to change velocity directly - much more responsive than forces
-          playerBody.applyImpulse({
-            x: velocityChange.x,
-            y: velocityChange.y,
-            z: velocityChange.z
-          }, true);
-          
-          // Apply a strong force toward the planet to maintain contact
-          const gravityStrength = 30; // Increased from 15
-          const normalForce = toPlanetCenter.normalize().multiplyScalar(gravityStrength);
-          playerBody.addForce({ 
-            x: normalForce.x, 
-            y: normalForce.y, 
-            z: normalForce.z 
-          });
-          
-          // Counter any velocity in the normal direction that would cause sliding off the surface
-          const normalVelocity = currentVelocity.dot(toPlanetCenter.normalize());
-          if (normalVelocity < 0) {
-            // If moving away from surface, apply counteracting impulse
-            const counterForce = toPlanetCenter.normalize().multiplyScalar(-normalVelocity * 0.8);
-            playerBody.applyImpulse({
-              x: counterForce.x,
-              y: counterForce.y,
-              z: counterForce.z
-            }, true);
-          }
-        } else {
-          // On other objects, use a similar approach but with different parameters
-          const moveSpeed = 4.0;
-          const targetVelocity = tangent.clone().multiplyScalar(moveSpeed);
-          
-          const velocityChange = new THREE.Vector3();
-          velocityChange.subVectors(targetVelocity, currentVelocity.projectOnPlane(groundNormal));
-          
-          playerBody.applyImpulse({
-            x: velocityChange.x,
-            y: velocityChange.y,
-            z: velocityChange.z
-          }, true);
-          
-          // Apply stronger normal force to stay on other objects
-          playerBody.addForce({
-            x: groundNormal.x * 20,
-            y: groundNormal.y * 20,
-            z: groundNormal.z * 20
-          });
-        }
-      } else {
-        // When not actively moving, dampen horizontal velocity to prevent sliding
-        const vel = playerBody.linvel();
-        const velocity = new THREE.Vector3(vel.x, vel.y, vel.z);
-        const playerPos = playerBody.translation();
-        const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z).normalize();
-        
-        // Project velocity onto the surface tangent plane
-        const tangentialVelocity = velocity.clone().projectOnPlane(toPlanetCenter);
-        
-        if (tangentialVelocity.length() > 0.1) {
-          // Apply an impulse to counteract tangential velocity
-          const dampingFactor = 0.8; // How much to dampen velocity per frame
-          playerBody.applyImpulse({
-            x: -tangentialVelocity.x * dampingFactor,
-            y: -tangentialVelocity.y * dampingFactor, 
-            z: -tangentialVelocity.z * dampingFactor
-          }, true);
-        }
-        
-        // Still maintain the normal force toward the planet
-        playerBody.addForce({
-          x: toPlanetCenter.x * 30,
-          y: toPlanetCenter.y * 30,
-          z: toPlanetCenter.z * 30
-        });
-      }
-      
-      if (keys['Space']) {
-        // Jump force - directly set velocity in the normal direction
-        const jumpSpeed = 10.0;
-        const jumpVel = new THREE.Vector3(
-          groundNormal.x * jumpSpeed,
-          groundNormal.y * jumpSpeed,
-          groundNormal.z * jumpSpeed
-        );
-        
-        // Get current velocity
-        const vel = playerBody.linvel();
-        const currentVel = new THREE.Vector3(vel.x, vel.y, vel.z);
-        
-        // Add jump velocity to horizontal velocity
-        const horizontalVel = currentVel.projectOnPlane(groundNormal);
-        const newVel = horizontalVel.add(jumpVel);
-        
-        // Set the velocity directly
-        playerBody.setLinvel({
-          x: newVel.x,
-          y: newVel.y,
-          z: newVel.z
-        }, true);
-      }
-    } else {
-      // Allow some air control
-      let moveDir = new THREE.Vector3(
-        (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
-        0,
-        (keys['KeyS'] ? 1 : 0) - (keys['KeyW'] ? 1 : 0)
-      )
-      
-      if (moveDir.length() > 0) {
-        moveDir.normalize().applyEuler(new THREE.Euler(0, cameraYaw, 0))
-        playerBody.addForce({ x: moveDir.x * 5, y: 0, z: moveDir.z * 5 }) // Changed from addImpulse to addForce with adjusted value
-      }
-    }
-
-    // Update player mesh position and rotation
+    // Get player position
     const playerPos = playerBody.translation()
-    playerMesh.position.set(playerPos.x, playerPos.y, playerPos.z)
+    const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z)
     
-    if (!falling) {
-      // For grounded movement, we want:
-      // 1. The player's feet aligned with the surface normal
-      // 2. The entire player rotating with yaw (left/right input)
-      // 3. The camera pitching up/down like a neck
+    // Calculate direction to planet center
+    const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z)
+    const distanceToPlanet = toPlanetCenter.length()
+    const normalToPlanet = toPlanetCenter.clone().normalize()
+    
+    // Check if player should be grounded
+    let onGround = false
+    
+    // When in falling state, check if we've hit the ground
+    if (falling) {
+      // Apply gravity
+      playerVelocity.add(normalToPlanet.clone().multiplyScalar(0.2))
       
-      // STEP 1: Determine the up vector (surface normal or direction to planet center)
-      let up = groundNormal.clone();
-      
-      // If we're on the planet, always use direction to center as up
-      const toPlanetCenter = new THREE.Vector3(-playerPos.x, -playerPos.y, -playerPos.z);
-      const onPlanet = toPlanetCenter.length() < planetRadius * 1.5;
-      if (onPlanet) {
-        up.copy(toPlanetCenter.normalize());
+      // Check for collision with planet
+      if (distanceToPlanet <= planetRadius + playerHeight/2 + 0.05) {
+        // Land on planet
+        onGround = true
+        falling = false
+        
+        // Position exactly on surface
+        const newPosition = normalToPlanet.clone().multiplyScalar(-(planetRadius + playerHeight/2))
+        playerPosition.copy(newPosition)
+        
+        // Zero out velocity when landing
+        playerVelocity.set(0, 0, 0)
+        
+        // Switch to kinematic body
+        playerBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased)
+        
+        // When landing, align with the planet surface
+        const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normalToPlanet.clone().negate())
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(normalToPlanet.clone().negate(), playerYaw)
+        const finalQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat)
+        
+        playerBody.setRotation({
+          x: finalQuat.x,
+          y: finalQuat.y,
+          z: finalQuat.z,
+          w: finalQuat.w
+        })
+      } else {
+        // Check for collision with other objects using a query instead of contactsWith
+        const playerBodyHandle = playerBody.handle
+        const playerPos = playerBody.translation()
+        
+        // Get the player's collider - assuming it's the first (and only) one attached to the player body
+        let playerCollider = null
+        world.forEachCollider(collider => {
+          if (collider.parent() === playerBodyHandle) {
+            playerCollider = collider;
+          }
+        });
+        
+        if (playerCollider) {
+          // Use the intersection test to check for contacts with other objects
+          let contactFound = false;
+          
+          // Check for intersection with all other colliders in the world
+          world.forEachCollider(otherCollider => {
+            // Skip if it's the player's own collider
+            if (otherCollider.handle === playerCollider.handle) return;
+            
+            // Check for intersection
+            if (world.intersectionPair(playerCollider, otherCollider)) {
+              contactFound = true;
+            }
+          });
+          
+          if (contactFound) {
+            onGround = true;
+            falling = false;
+            playerVelocity.set(0, 0, 0);
+            
+            // Switch to kinematic body
+            playerBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased);
+          }
+        }
       }
       
-      // STEP 2: Create the player's orientation
-      // First align with surface by rotating from world-up to surface-normal
-      const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      // Update position with velocity
+      if (falling) {
+        playerPosition.add(playerVelocity)
+        
+        // Apply air control
+        let moveDir = new THREE.Vector3(
+          (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
+          0,
+          (keys['KeyS'] ? 1 : 0) - (keys['KeyW'] ? 1 : 0)
+        )
+        
+        if (moveDir.length() > 0) {
+          moveDir.normalize().applyEuler(new THREE.Euler(0, cameraYaw, 0))
+          const airControl = 0.1
+          playerVelocity.x += moveDir.x * airControl
+          playerVelocity.z += moveDir.z * airControl
+        }
+        
+        // Set position directly for kinematic body
+        playerBody.setTranslation({
+          x: playerPosition.x,
+          y: playerPosition.y,
+          z: playerPosition.z
+        })
+      }
+    } else {
+      // We're on the ground (kinematic movement)
       
-      // Then apply yaw rotation around the surface normal (up vector) with negative sign
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, -playerYaw);
+      // Handle movement based on keys
+      let moveDir = new THREE.Vector3(
+        (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
+        0,
+        (keys['KeyS'] ? 1 : 0) - (keys['KeyW'] ? 1 : 0)
+      )
       
-      // Combine: first align with surface, then apply yaw rotation
-      const playerQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat);
+      if (moveDir.length() > 0) {
+        // Calculate move direction in player's local space
+        moveDir.normalize().applyAxisAngle(normalToPlanet.clone().negate(), -playerYaw)
+        
+        // Project onto tangent plane of the sphere
+        const tangent = moveDir.projectOnPlane(normalToPlanet)
+        
+        // Move along the surface
+        const moveSpeed = 0.15 // Speed per frame
+        const movement = tangent.multiplyScalar(moveSpeed)
+        
+        // Update position
+        playerPosition.add(movement)
+        
+        // Project back onto the sphere's surface to ensure we stay exactly on it
+        const newDistanceFromCenter = playerPosition.length()
+        const correctDistance = planetRadius + playerHeight/2
+        playerPosition.normalize().multiplyScalar(correctDistance)
+        
+        // Set the position directly
+        playerBody.setTranslation({
+          x: playerPosition.x,
+          y: playerPosition.y,
+          z: playerPosition.z
+        })
+      }
       
-      // STEP 3: Apply the rotation to both visual mesh and physics body
-      playerMesh.quaternion.copy(playerQuat);
+      // Handle jumping
+      if (keys['Space']) {
+        falling = true
+        
+        // Switch to dynamic body for physics-based movement
+        playerBody.setBodyType(RAPIER.RigidBodyType.Dynamic)
+        playerBody.setLinearDamping(playerDynamicSettings.linearDamping)
+        playerBody.setAngularDamping(playerDynamicSettings.angularDamping)
+        
+        // Apply jump impulse along the surface normal
+        const jumpForce = 8.0
+        playerVelocity = normalToPlanet.clone().negate().multiplyScalar(jumpForce)
+        
+        playerBody.setLinvel({
+          x: playerVelocity.x,
+          y: playerVelocity.y,
+          z: playerVelocity.z
+        }, true)
+      }
+    }
+
+    // Update player mesh position
+    const updatedPlayerPos = playerBody.translation()
+    playerMesh.position.set(updatedPlayerPos.x, updatedPlayerPos.y, updatedPlayerPos.z)
+    
+    // Update rotation based on whether grounded or falling
+    if (!falling) {
+      // On ground: Align with surface and handle yaw
+      const up = new THREE.Vector3(-updatedPlayerPos.x, -updatedPlayerPos.y, -updatedPlayerPos.z).normalize().negate()
       
-      // Apply the same rotation to the physics body to ensure consistent behavior
+      // Align with surface by rotating from world-up to surface normal
+      const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up)
+      
+      // Apply yaw rotation around the surface normal
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, -playerYaw)
+      
+      // Combine: first align with surface, then apply yaw
+      const playerQuat = new THREE.Quaternion().multiplyQuaternions(yawQuat, alignQuat)
+      
+      // Apply the rotation
+      playerMesh.quaternion.copy(playerQuat)
+      
+      // Update physics body rotation
       playerBody.setRotation({
-        x: playerQuat.x, 
-        y: playerQuat.y, 
-        z: playerQuat.z, 
+        x: playerQuat.x,
+        y: playerQuat.y,
+        z: playerQuat.z,
         w: playerQuat.w
-      });
+      })
       
-      // STEP 4: Calculate player's local coordinate system for camera placement
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat);
+      // Calculate local axes for camera positioning
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat)
       
-      // STEP 5: Position camera at player's head
+      // Position camera at player's head
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerQuat)
-      );
-      camera.position.copy(headPos);
+      )
+      camera.position.copy(headPos)
       
-      // STEP 6: Set camera orientation
-      // Start with the player's orientation (includes alignment to surface + yaw)
-      camera.quaternion.copy(playerQuat);
+      // Set camera orientation - start with player orientation
+      camera.quaternion.copy(playerQuat)
       
-      // Only add pitch rotation to the camera (not to the player)
-      // This rotates around the local right axis, like a neck
-      camera.rotateOnAxis(right, cameraPitch);
+      // Add pitch for looking up/down
+      camera.rotateOnAxis(right, cameraPitch)
     } else {
-      // When falling, handle differently
-      
-      // Create quaternion for the camera's orientation in free fall
+      // In air - handle free orientation
       const freefallQuat = new THREE.Quaternion().setFromEuler(
         new THREE.Euler(cameraPitch, cameraYaw, 0, 'YXZ')
-      );
+      )
       
-      // Apply the rotation to the player mesh
+      // Apply rotation to player mesh for visual representation
       playerMesh.quaternion.copy(new THREE.Quaternion().setFromEuler(
         new THREE.Euler(0, cameraYaw, 0, 'YXZ')
-      ));
+      ))
       
-      // Position camera at player's head using the same offset logic as on ground
+      // Position camera
       const headPos = playerMesh.position.clone().add(
         cameraOffset.clone().applyQuaternion(playerMesh.quaternion)
-      );
-      camera.position.copy(headPos);
+      )
+      camera.position.copy(headPos)
       
-      // Set camera orientation based on freefallQuat
-      camera.quaternion.copy(freefallQuat);
+      // Set camera orientation
+      camera.quaternion.copy(freefallQuat)
     }
     
     // Update interactable objects positions and rotations
