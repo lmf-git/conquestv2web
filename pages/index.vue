@@ -546,50 +546,6 @@
     return null
   };
 
-  function isCollidingWithCube(position, excludeHandle, isCurrentPosition = false) {
-    const radius = PLAYER_RADIUS * (isCurrentPosition ? 1.0 : 1.2)
-    const shape = new RAPIER.Capsule(PLAYER_HEIGHT / 2, radius)
-    const pos = new RAPIER.Vector3(position.x, position.y, position.z)
-    const rot = playerBodies[0]?.rotation() || new RAPIER.Quaternion(0, 0, 0, 1)
-    
-    const intersections = physicsWorld.intersectionsWithShape(
-      pos, rot, shape, handle => {
-        if (handle === excludeHandle) return false
-        const collider = physicsWorld.getCollider(handle)
-        if (!collider) return false
-        
-        const body = physicsWorld.getRigidBody(collider.parent())
-        return body?.isFixed() && collider.shapeType() === RAPIER.ShapeType.Cuboid
-      }
-    )
-    
-    return intersections?.length > 0
-  }
-
-  function detectCollisionsInDirection(playerPos, direction, playerHandle) {
-    const testDistance = PLAYER_RADIUS * 1.5
-    const testPos = {
-      x: playerPos.x + direction.x * testDistance,
-      y: playerPos.y + direction.y * testDistance,
-      z: playerPos.z + direction.z * testDistance
-    }
-    
-    const shape = new RAPIER.Capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS * 0.9)
-    const pos = new RAPIER.Vector3(testPos.x, testPos.y, testPos.z)
-    const rot = playerBodies[0]?.rotation() || new RAPIER.Quaternion(0, 0, 0, 1)
-    
-    const intersections = physicsWorld.intersectionsWithShape(
-      pos, rot, shape, handle => {
-        if (handle === playerHandle) return false
-        const collider = physicsWorld.getCollider(handle)
-        if (!collider) return false
-        return physicsWorld.getRigidBody(collider.parent())?.isFixed()
-      }
-    )
-    
-    return intersections?.length > 0
-  }
-
   function movePlayer() {
     // Early returns if necessary conditions aren't met
     if (playerBodies.length === 0) return
@@ -650,19 +606,8 @@
       newPosition.y += playerVelocities[0].y
       newPosition.z += playerVelocities[0].z
       
-      const moveVector = new THREE.Vector3(
-        newPosition.x - playerPos.x,
-        newPosition.y - playerPos.y,
-        newPosition.z - playerPos.z
-      ).normalize()
-      
-      // Apply movement or land on planet if collision detected
-      if (!detectCollisionsInDirection(playerPos, moveVector, playerHandle)) {
-        playerBody.setTranslation(newPosition)
-      } else {
-        playerFallingStates[0] = false
-        positionPlayerOnSurface(0, planetBody)
-      }
+      // Apply movement
+      playerBody.setTranslation(newPosition)
     } 
     else {
       //--- SURFACE MOVEMENT ---//
@@ -672,11 +617,6 @@
         playerPos.y - planetPos.y,
         playerPos.z - planetPos.z
       ).normalize()
-      
-      if (isCollidingWithCube(playerPos, playerHandle, true)) {
-        positionPlayerOnSurface(0, planetBody)
-        return
-      }
       
       // Calculate movement direction relative to player orientation and surface
       const rotation = playerBody.rotation()
@@ -694,54 +634,6 @@
       
       if (localMoveDir.length() === 0) return
       localMoveDir.normalize()
-      
-      // Handle collision by attempting to slide
-      if (detectCollisionsInDirection(playerPos, localMoveDir, playerHandle)) {
-        // Sliding movement logic
-        const rayResults = []
-        const numRays = 12
-        
-        for (let i = 0; i < numRays; i++) {
-          const angle = (i / numRays) * Math.PI * 2
-          let rayDir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle))
-          
-          const dot = rayDir.dot(surfaceNormal)
-          rayDir.sub(surfaceNormal.clone().multiplyScalar(dot)).normalize()
-          
-          if (!detectCollisionsInDirection(playerPos, rayDir, playerHandle)) {
-            const directionMatch = rayDir.dot(localMoveDir)
-            if (directionMatch > 0.1) {
-              rayResults.push({ direction: rayDir, match: directionMatch })
-            }
-          }
-        }
-        
-        if (rayResults.length === 0) return
-        
-        rayResults.sort((a, b) => b.match - a.match)
-        const bestDir = rayResults[0].direction
-        
-        const slidePosition = {
-          x: playerPos.x + bestDir.x * MOVE_SPEED * 0.7,
-          y: playerPos.y + bestDir.y * MOVE_SPEED * 0.7,
-          z: playerPos.z + bestDir.z * MOVE_SPEED * 0.7
-        }
-        
-        const dirToSphere = new THREE.Vector3(
-          slidePosition.x - planetPos.x,
-          slidePosition.y - planetPos.y,
-          slidePosition.z - planetPos.z
-        ).normalize()
-        
-        const surfacePosition = {
-          x: planetPos.x + dirToSphere.x * (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS),
-          y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS),
-          z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
-        }
-        
-        playerBody.setTranslation(surfacePosition)
-        return
-      }
       
       // Regular movement on surface
       const newPosition = {
@@ -761,14 +653,6 @@
         y: planetPos.y + dirToSphere.y * (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS),
         z: planetPos.z + dirToSphere.z * (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
       }
-      
-      const moveVec = new THREE.Vector3(
-        surfacePosition.x - playerPos.x,
-        surfacePosition.y - playerPos.y,
-        surfacePosition.z - playerPos.z
-      ).normalize()
-      
-      if (detectCollisionsInDirection(playerPos, moveVec, playerHandle)) return
       
       playerBody.setTranslation(surfacePosition)
       
@@ -796,11 +680,6 @@
       })
     }
   }
-
-  // Remove these functions as they're now incorporated into movePlayer
-  // function handleFallingMovement(playerBody, playerPos, moveDirection, playerHandle) {...}
-  // function handleSurfaceMovement(playerBody, playerPos, moveDirection, playerHandle) {...}
-  // function handleCollisionSliding(playerBody, playerPos, localMoveDir, surfaceNormal, playerHandle) {...}
 </script>
 
 <style scoped>
