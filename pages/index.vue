@@ -155,7 +155,7 @@
       const player = {
         body: playerBody,
         mesh: playerMesh,
-        isFalling: true,
+        falling: true,
         velocity: new THREE.Vector3(0, 0, 0),
         colliderHandle: collider.handle,
         index: i
@@ -367,7 +367,7 @@
           playerPos.z - otherPos.z
         ).normalize()
         
-        player.isFalling = false
+        player.falling = false
         positionPlayerOnSurface(player, otherBody, otherCollider, normal)
       }
     })
@@ -405,7 +405,7 @@
     for (const player of players) {
       if (!player.body || !planetBody) continue
       
-      if (player.isFalling) {
+      if (player.falling) {
         const playerPos = player.body.translation()
         const planetPos = planetBody.translation()
         
@@ -418,7 +418,7 @@
         const distanceToSurface = gravityDirection.length() - (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
         
         if (distanceToSurface <= 0.1) {
-          player.isFalling = false
+          player.falling = false
           const normal = gravityDirection.clone().normalize()
           positionPlayerOnSurface(player, planetBody, null, normal)
           continue
@@ -453,7 +453,7 @@
         ).length() - (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
         
         if (newDistToSurface <= 0.05) {
-          player.isFalling = false
+          player.falling = false
           positionPlayerOnSurface(player, planetBody, null, gravityDirection.normalize())
         }
       } else {
@@ -475,7 +475,7 @@
     movePlayer()
     
     for (const player of players) {
-      if (!player.isFalling && player.body) {
+      if (!player.falling && player.body) {
         positionPlayerOnSurface(player, planetBody)
       }
       
@@ -488,8 +488,8 @@
           playerPos.z - planetPos.z
         ).length() - (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
         
-        if (player.isFalling && distToSurface <= 0.05) {
-          player.isFalling = false
+        if (player.falling && distToSurface <= 0.05) {
+          player.falling = false
           const normal = new THREE.Vector3(
             playerPos.x - planetPos.x,
             playerPos.y - planetPos.y,
@@ -542,7 +542,7 @@
     if (moveDirection.length() === 0) return
     moveDirection.normalize()
     
-    if (player.isFalling) {
+    if (player.falling) {
       const rotation = player.body.rotation()
       const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w)
       const worldMoveDir = moveDirection.clone().applyQuaternion(playerQuaternion)
@@ -557,7 +557,7 @@
       const distanceToSurface = toPlanet.length() - (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
       
       if (distanceToSurface <= 0.1) {
-        player.isFalling = false
+        player.falling = false
         const normal = toPlanet.clone().normalize()
         positionPlayerOnSurface(player, planetBody, null, normal)
         return
