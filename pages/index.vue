@@ -22,19 +22,13 @@
   let renderer, scene, camera, physicsWorld, planetBody, planetMesh, animationFrameId;
   let controls;
 
-  // Replace multiple player arrays with a single players array of objects
-  let players = []; // Each player will have: {body, mesh, isFalling, velocity, colliderHandle}
-  let objectBodies = [];
-  let objectMeshes = [];
-  let surfaceCubeBodies = [];
-  let surfaceCubeMeshes = [];
-
-  // Map collider handles directly to player objects
+  let players = [];
+  let objects = [];
   let colliderToPlayerMap = new Map();
   let eventQueue;
 
   const keys = { w: false, a: false, s: false, d: false };
-
+  
   const handleKeyDown = ({key}) => {
     const k = key.toLowerCase()
     if (k in keys) keys[k] = true
@@ -113,6 +107,14 @@
     window.removeEventListener('resize', onWindowResize)
   });
 
+  function updateObjectTransform(obj) {
+    if (!obj.body || !obj.mesh) return
+    const pos = obj.body.translation()
+    const rot = obj.body.rotation()
+    obj.mesh.position.set(pos.x, pos.y, pos.z)
+    obj.mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w)
+  }
+
   function createPlayers(count) {
     const playerColors = [0xe53935, 0x43A047, 0x1E88E5]
     
@@ -150,7 +152,6 @@
       )
       scene.add(playerMesh)
       
-      // Create unified player object
       const player = {
         body: playerBody,
         mesh: playerMesh,
@@ -217,8 +218,12 @@
       )
       scene.add(mesh)
       
-      objectBodies.push(body)
-      objectMeshes.push(mesh)
+      objects.push({
+        body,
+        mesh,
+        isFixed: false,
+        type: 'random'
+      })
     }
   };
 
@@ -275,8 +280,12 @@
       
       scene.add(mesh)
       
-      surfaceCubeBodies.push(cubeBody)
-      surfaceCubeMeshes.push(mesh)
+      objects.push({
+        body: cubeBody,
+        mesh,
+        isFixed: true,
+        type: 'cube'
+      })
     }
   };
 
@@ -286,7 +295,6 @@
     const playerPos = player.body.translation()
     const targetPos = targetBody.translation()
     
-    // Calculate normal if not provided
     if (!normal) {
       normal = new THREE.Vector3(
         playerPos.x - targetPos.x,
@@ -298,15 +306,12 @@
       normal.normalize()
     }
     
-    // Position player on surface
     let offsetDistance = 0
     
     if (targetBody === planetBody) {
-      // Sphere (planet) positioning
       offsetDistance = PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS
     } 
     else if (targetCollider) {
-      // Handle other surfaces based on collider type
       if (targetCollider.shapeType() === RAPIER.ShapeType.Ball) {
         offsetDistance = targetCollider.radius() + PLAYER_RADIUS
       } 
@@ -315,7 +320,6 @@
       }
     }
     
-    // Set player position on surface
     const surfacePosition = {
       x: targetPos.x + normal.x * offsetDistance,
       y: targetPos.y + normal.y * offsetDistance,
@@ -324,7 +328,6 @@
     
     player.body.setTranslation(surfacePosition)
     
-    // Align player with normal
     const quaternion = new THREE.Quaternion().setFromUnitVectors(
       new THREE.Vector3(0, 1, 0), normal
     )
@@ -336,7 +339,6 @@
       w: quaternion.w
     })
     
-    // Reset velocity
     player.velocity.set(0, 0, 0)
     
     return normal
@@ -348,7 +350,6 @@
       const collider2 = physicsWorld.getCollider(handle2)
       if (!collider1 || !collider2) return
       
-      // Check if either collider belongs to a player
       const player = colliderToPlayerMap.get(handle1) || colliderToPlayerMap.get(handle2)
       if (!player || !started) return
       
@@ -370,10 +371,12 @@
         positionPlayerOnSurface(player, otherBody, otherCollider, normal)
       }
     })
-  };
+  }
 
-  function applyGravityToObject(objectBody, attractor) {
-    const objectPos = objectBody.translation()
+  function applyGravityToObject(obj, attractor) {
+    if (!obj.body || obj.isFixed) return
+    
+    const objectPos = obj.body.translation()
     const attractorPos = attractor.translation()
     
     const direction = new THREE.Vector3(
@@ -388,7 +391,7 @@
     direction.normalize()
     const forceMagnitude = GRAVITY_STRENGTH / (distance * distance) * 0.01
     
-    objectBody.applyImpulse(
+    obj.body.applyImpulse(
       {
         x: direction.x * forceMagnitude,
         y: direction.y * forceMagnitude,
@@ -396,7 +399,7 @@
       },
       true
     )
-  };
+  }
 
   function applyPlanetGravity() {
     for (const player of players) {
@@ -458,10 +461,10 @@
       }
     }
     
-    objectBodies.forEach(body => {
-      if (body) applyGravityToObject(body, planetBody)
+    objects.forEach(obj => {
+      if (!obj.isFixed) applyGravityToObject(obj, planetBody)
     })
-  };
+  }
 
   function animate() {
     animationFrameId = requestAnimationFrame(animate)
@@ -504,52 +507,32 @@
       planetMesh.position.set(pos.x, pos.y, pos.z)
     }
     
-    // Update player meshes
     for (const player of players) {
-      if (!player.body || !player.mesh) continue
-      const pos = player.body.translation()
-      const rot = player.body.rotation()
-      player.mesh.position.set(pos.x, pos.y, pos.z)
-      player.mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w)
+      updateObjectTransform(player)
     }
     
-    for (let i = 0; i < objectBodies.length; i++) {
-      if (!objectBodies[i] || !objectMeshes[i]) continue
-      const pos = objectBodies[i].translation()
-      const rot = objectBodies[i].rotation()
-      objectMeshes[i].position.set(pos.x, pos.y, pos.z)
-      objectMeshes[i].quaternion.set(rot.x, rot.y, rot.z, rot.w)
-    }
-    
-    for (let i = 0; i < surfaceCubeBodies.length; i++) {
-      if (!surfaceCubeBodies[i] || !surfaceCubeMeshes[i]) continue
-      const pos = surfaceCubeBodies[i].translation()
-      const rot = surfaceCubeBodies[i].rotation()
-      surfaceCubeMeshes[i].position.set(pos.x, pos.y, pos.z)
-      surfaceCubeMeshes[i].quaternion.set(rot.x, rot.y, rot.z, rot.w)
+    for (const obj of objects) {
+      updateObjectTransform(obj)
     }
     
     renderer.render(scene, camera)
-  };
+  }
 
   function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight
     camera.updateProjectionMatrix()
     renderer.setSize(window.innerWidth, window.innerHeight)
-  };
+  }
 
   function movePlayer() {
-    // Early returns if necessary conditions aren't met
     if (players.length === 0) return
     
-    // We'll control the first player
     const player = players[0]
     if (!player || !player.body) return
     
     const playerPos = player.body.translation()
     if (!playerPos || typeof playerPos.x !== 'number') return
     
-    // Get movement input direction
     const moveDirection = new THREE.Vector3(0, 0, 0)
     if (keys.w) moveDirection.z -= 1
     if (keys.s) moveDirection.z += 1
@@ -559,9 +542,7 @@
     if (moveDirection.length() === 0) return
     moveDirection.normalize()
     
-    // Handle movement based on player state
     if (player.isFalling) {
-      //--- FALLING MOVEMENT ---//
       const rotation = player.body.rotation()
       const playerQuaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w)
       const worldMoveDir = moveDirection.clone().applyQuaternion(playerQuaternion)
@@ -575,7 +556,6 @@
       
       const distanceToSurface = toPlanet.length() - (PLANET_RADIUS + PLAYER_HEIGHT/2 + PLAYER_RADIUS)
       
-      // Land on planet if close enough
       if (distanceToSurface <= 0.1) {
         player.isFalling = false
         const normal = toPlanet.clone().normalize()
@@ -583,7 +563,6 @@
         return
       }
       
-      // Calculate new position with movement and gravity
       const newPosition = {
         x: playerPos.x + worldMoveDir.x * MOVE_SPEED * 0.5,
         y: playerPos.y + worldMoveDir.y * MOVE_SPEED * 0.5,
@@ -596,11 +575,9 @@
       newPosition.y += player.velocity.y
       newPosition.z += player.velocity.z
       
-      // Apply movement
       player.body.setTranslation(newPosition)
     } 
     else {
-      //--- SURFACE MOVEMENT ---//
       const planetPos = planetBody.translation()
       const surfaceNormal = new THREE.Vector3(
         playerPos.x - planetPos.x,
@@ -608,7 +585,6 @@
         playerPos.z - planetPos.z
       ).normalize()
       
-      // Calculate movement direction relative to player orientation and surface
       const rotation = player.body.rotation()
       const playerQuat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w)
       const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat)
@@ -625,7 +601,6 @@
       if (localMoveDir.length() === 0) return
       localMoveDir.normalize()
       
-      // Regular movement on surface
       const newPosition = {
         x: playerPos.x + localMoveDir.x * MOVE_SPEED,
         y: playerPos.y + localMoveDir.y * MOVE_SPEED,
@@ -646,7 +621,6 @@
       
       player.body.setTranslation(surfacePosition)
       
-      // Update player orientation to match surface
       const upVector = new THREE.Vector3(0, 1, 0)
       const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, dirToSphere)
       
