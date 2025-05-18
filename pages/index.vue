@@ -22,7 +22,12 @@
     const MOVE_SPEED = 0.1; // Speed for horizontal movement
     const PLANET_RADIUS = 8; // Radius of the planetary sphere
     const PLANET_MASS = 5000; // Mass of the planet for gravity calculations
-
+    const MAX_WALKABLE_SLOPE = 0.7; // Maximum slope angle that player can walk on (in radians, approx 40 degrees)
+    const CORNER_THRESHOLD = 0.08; // Distance threshold for detecting if player is on a corner
+    const SLIDE_SPEED_MULTIPLIER = 1.5; // How fast the player slides down steep slopes
+    const EDGE_VELOCITY_THRESHOLD = 0.12; // Minimum velocity to fly off an edge
+    const EDGE_DETECTION_TIME = 5; // Frames to wait before re-grounding after going off an edge
+    
     const canvas = ref(null);
     let renderer, scene, camera, physicsWorld, animationFrameId;
     let controls;
@@ -173,7 +178,12 @@
         mass: 1, // Mass for gravity calculations
         nextPosition: null, // For storing the next position to move to
         jumpDirection: null, // To store jump direction vector
-        isJumping: false     // Flag to track active jump state
+        isJumping: false,     // Flag to track active jump state
+        onSteepSlope: false, // Flag to track if player is on a steep slope
+        slideDirection: null,
+        edgeDetectionCounter: 0, // Counter to track time after losing ground contact
+        momentum: new THREE.Vector3(0, 0, 0), // Store momentum for edge fly-off
+        wasGrounded: false // Track previous grounded state to detect transitions
       };
     }
 
@@ -594,6 +604,9 @@
       const playerRot = player.body.rotation();
       const playerQuat = new THREE.Quaternion(playerRot.x, playerRot.y, playerRot.z, playerRot.w);
       
+      // Track if the player was grounded in the previous frame
+      player.wasGrounded = player.grounded;
+      
       // Create a directional vector based on keys pressed
       const moveDirection = new THREE.Vector3(0, 0, 0);
       if (keys.w) moveDirection.z -= 1;
@@ -616,11 +629,43 @@
         playerPos.z
       );
       
+      // Save previous position to calculate velocity
+      const prevPos = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
+      
       // If grounded, move along the surface using the contact normal
       if (player.grounded && player.lastContactNormal) {
         const normal = player.lastContactNormal;
         
-        if (moveDirection.length() > 0) {
+        // If on a steep slope, slide down
+        if (player.onSteepSlope && player.slideDirection) {
+          // Calculate the slide speed based on the slope angle
+          const slideSpeed = player.fallSpeed + 0.05 * SLIDE_SPEED_MULTIPLIER;
+          
+          // Apply slide movement along the slide direction
+          newPosition.add(player.slideDirection.clone().multiplyScalar(slideSpeed));
+          
+          // Check if player is trying to move uphill
+          if (moveDirection.length() > 0) {
+            // Project movement onto the surface plane defined by the normal
+            const proj = worldMoveDir.dot(normal);
+            const tangent = new THREE.Vector3().copy(worldMoveDir).sub(
+              normal.clone().multiplyScalar(proj)
+            ).normalize();
+            
+            // Determine if movement is going uphill by checking the dot product with slide direction
+            const dotWithSlide = tangent.dot(player.slideDirection);
+            
+            // Only allow movement if NOT going uphill against the slide direction
+            if (dotWithSlide >= -0.3) { // Allow slight uphill movement (30 degrees)
+              // Apply reduced movement control while sliding
+              newPosition.add(tangent.multiplyScalar(MOVE_SPEED * 0.5));
+            }
+          }
+          
+          // Store the movement for momentum
+          player.momentum.copy(player.slideDirection).multiplyScalar(slideSpeed);
+        } else if (moveDirection.length() > 0) {
+          // Normal movement on walkable surface
           // Project movement onto the surface plane defined by the normal
           const proj = worldMoveDir.dot(normal);
           const tangent = new THREE.Vector3().copy(worldMoveDir).sub(
@@ -629,12 +674,43 @@
           
           // Apply movement along the surface
           newPosition.add(tangent.multiplyScalar(MOVE_SPEED));
+          
+          // Store the movement as momentum for potential edge fly-off
+          player.momentum.copy(tangent).multiplyScalar(MOVE_SPEED);
+        } else {
+          // If not actively moving, gradually reduce momentum
+          player.momentum.multiplyScalar(0.9);
         }
       } 
-      // If falling or jumping, allow limited air control
+      // If falling or jumping, handle air control
       else if (player.falling) {
-        // If actively jumping, use the stored jump direction throughout
-        if (player.isJumping && player.jumpDirection) {
+        // Explicitly reset sliding state when in the air
+        player.onSteepSlope = false;
+        player.slideDirection = null;
+        
+        // If we just lost ground contact (went off an edge) and have sufficient speed
+        if (player.wasGrounded && player.momentum.length() > EDGE_VELOCITY_THRESHOLD) {
+          // Start edge detection counter
+          player.edgeDetectionCounter = EDGE_DETECTION_TIME;
+          
+          // Apply momentum to continue movement
+          newPosition.add(player.momentum);
+          
+          // Apply slight downward force to simulate gravity
+          const planet = objects.find(obj => obj.type === 'planet');
+          if (planet && planet.body) {
+            const planetPos = planet.body.translation();
+            const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+            
+            // Direction from player to planet center
+            const gravityDir = new THREE.Vector3().subVectors(planetPosition, newPosition).normalize();
+            
+            // Apply mild gravity influence
+            newPosition.add(gravityDir.multiplyScalar(0.03));
+          }
+        }
+        // Handle active jump
+        else if (player.isJumping && player.jumpDirection) {
           // Use stored jump direction for the entire jump arc
           newPosition.add(player.jumpDirection.clone().multiplyScalar(-player.fallSpeed));
           
@@ -674,8 +750,9 @@
       player.nextPosition = newPosition;
       checkCollisionsAndResolve();
       
-      // Only update rotation when grounded and there's a contact normal
-      if (player.grounded && player.lastContactNormal) {
+      // Only update rotation when grounded, not sliding on a steep slope,
+      // and there's a contact normal
+      if (player.grounded && player.lastContactNormal && !player.onSteepSlope) {
         const upVector = new THREE.Vector3(0, 1, 0);
         const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, player.lastContactNormal);
         
@@ -688,7 +765,7 @@
       }
     }
     
-    // Update collision function to handle kinematic movement
+    // Update checkCollisionsAndResolve to improve slope detection
     function checkCollisionsAndResolve() {
       if (!player || !player.body || !player.mesh || !player.nextPosition) return;
       
@@ -801,11 +878,48 @@
       
       // Handle the closest collision
       if (closestNormal) {
-        // We have a collision, resolve it
-        player.grounded = true;
-        player.falling = false;
-        player.lastContactNormal = closestNormal;
-        player.fallSpeed = 0; // Reset fall speed when grounded
+        // Calculate the slope angle once for use in different checks
+        const upVector = new THREE.Vector3(0, 1, 0);
+        const angle = Math.acos(closestNormal.dot(upVector));
+        const isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+        
+        // Store previous grounded state and normal for comparison
+        const wasGrounded = player.grounded;
+        const prevNormal = player.lastContactNormal ? player.lastContactNormal.clone() : null;
+        
+        // Don't re-ground the player immediately if they just went off an edge
+        if (player.edgeDetectionCounter > 0) {
+          // Only ground the player on a new surface if it's relatively flat (not too steep)
+          if (!isSteepSlope) {
+            // This is a flat enough surface to land on
+            player.edgeDetectionCounter = 0;
+            player.grounded = true;
+            player.falling = false;
+          } else {
+            // Surface is too steep, maintain momentum and just resolve collision
+            // without grounding the player
+            player.grounded = false;
+            player.falling = true;
+          }
+        } else {
+          // Normal collision handling for non-edge cases
+          player.grounded = true;
+          player.falling = false;
+        }
+        
+        // Only update the contact normal for orientation if:
+        // 1. It's not a steep slope, OR
+        // 2. Player doesn't have a contact normal yet, OR
+        // 3. Player was not previously grounded (meaning they just landed)
+        if (!isSteepSlope || !prevNormal || !wasGrounded) {
+          player.lastContactNormal = closestNormal.clone();
+        }
+        
+        // Store collision normal separately for slide calculations
+        const slideNormal = closestNormal.clone();
+        
+        // Reset fall speed when any collision happens, even if not grounded
+        player.fallSpeed = 0;
         
         // Create collision normal arrow
         collisionNormalArrow = new THREE.ArrowHelper(
@@ -817,6 +931,42 @@
           0.15
         );
         scene.add(collisionNormalArrow);
+        
+        // IMPORTANT: Reset slide state by default, only set it if needed
+        const wasOnSteepSlope = player.onSteepSlope;
+        player.onSteepSlope = false;
+        player.slideDirection = null;
+        
+        // If the angle is too steep, check if we should slide
+        if (isSteepSlope) {
+          // Calculate the player's movement direction relative to the slope
+          const moveVec = new THREE.Vector3().subVectors(
+            nextPosition, 
+            new THREE.Vector3(
+              player.body.translation().x, 
+              player.body.translation().y, 
+              player.body.translation().z
+            )
+          );
+          
+          // Calculate the projection of movement direction onto the slope normal
+          const moveTowardSlope = moveVec.dot(closestNormal);
+          
+          // Only slide if player is moving toward the slope or is already on it
+          if (moveTowardSlope < 0 || (wasGrounded && prevNormal && prevNormal.dot(closestNormal) > 0.7)) {
+            player.onSteepSlope = true;
+            
+            // Find the global up vector in player's local space
+            const gravityDir = new THREE.Vector3(0, -1, 0);
+            
+            // Calculate slide direction (project gravity onto the surface plane using slide normal)
+            const proj = gravityDir.dot(slideNormal);
+            player.slideDirection = new THREE.Vector3()
+              .copy(gravityDir)
+              .sub(slideNormal.clone().multiplyScalar(proj))
+              .normalize();
+          }
+        }
         
         // Resolve collision by moving the player along the normal
         // Push the player out along the collision normal to prevent sinking
@@ -831,16 +981,22 @@
           y: resolvedPosition.y,
           z: resolvedPosition.z
         });
-      } else {
-        // No collision, just move to the next position
+      } 
+      else {
+        // No collision, explicitly reset sliding and grounded state
         player.body.setTranslation({
           x: nextPosition.x,
           y: nextPosition.y,
           z: nextPosition.z
         });
         
+        // Ensure sliding and grounded states are reset when airborne
+        player.onSteepSlope = false;
+        player.slideDirection = null;
+        player.grounded = false;
+        
         // If not grounded and not actively jumping, player is falling
-        if (!player.grounded && player.jumpCooldown <= 0) {
+        if (player.jumpCooldown <= 0) {
           player.falling = true;
         }
       }
