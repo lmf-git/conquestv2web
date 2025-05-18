@@ -955,19 +955,60 @@
       
       // Handle the closest collision
       if (closestNormal) {
-        // Calculate the slope angle differently based on the object type
+        // Calculate the slope angle differently based on the local gravity direction
         let isSteepSlope = false;
         
-        if (closestHit && closestHit.type === 'planet') {
-          // For planets, we don't use the steep slope logic 
-          // All points on the sphere are valid standing positions
-          isSteepSlope = false; 
-        } else {
-          // For regular objects, use the normal steep slope calculation
-          const upVector = new THREE.Vector3(0, 1, 0);
+        // Find the planet for gravity reference
+        const planet = objects.find(obj => obj.type === 'planet');
+        
+        // Determine the "up" vector based on context
+        let upVector;
+        
+        if (planet && closestHit && closestHit.type === 'planet') {
+          // On planet: "up" is away from planet center (along the surface normal)
+          upVector = closestNormal.clone(); // Surface normal is already pointing away from center
+          
+          // For planets, we don't consider standard slopes, but we do consider
+          // extreme angles that might occur with other objects on the planet
+          const surfaceAngle = 0;  // No steep slopes on smooth planet surface
+          isSteepSlope = false;    // Planet surface is always walkable
+        } 
+        else if (planet && !player.falling) {
+          // Not on planet but affected by planet gravity
+          // Get player's direction away from planet center
+          const planetPos = planet.body.translation();
+          const playerPos = player.body.translation();
+          upVector = new THREE.Vector3(
+            playerPos.x - planetPos.x,
+            playerPos.y - planetPos.y,
+            playerPos.z - planetPos.z
+          ).normalize();
+          
+          // Calculate angle between surface normal and up vector (gravity direction)
+          const angle = Math.acos(closestNormal.dot(upVector));
+          isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+        } 
+        else {
+          // Default case: use world up vector
+          upVector = new THREE.Vector3(0, 1, 0);
           const angle = Math.acos(closestNormal.dot(upVector));
           isSteepSlope = angle > MAX_WALKABLE_SLOPE;
         }
+        
+        // Visualize gravity-relative "up" direction for debugging
+        // Comment out if not needed
+        if (collisionNormalArrow) {
+          scene.remove(collisionNormalArrow);
+        }
+        collisionNormalArrow = new THREE.ArrowHelper(
+          closestNormal,
+          nextPosition,
+          NORMAL_ARROW_LENGTH * 1.5,
+          COLLISION_ARROW_COLOR,
+          0.3,
+          0.15
+        );
+        scene.add(collisionNormalArrow);
         
         // Store previous grounded state and normal for comparison
         const wasGrounded = player.grounded;
