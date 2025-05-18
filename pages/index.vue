@@ -14,6 +14,7 @@
     const PLAYER_RADIUS = 0.2;
     const PLAYER_HEIGHT = 0.8;
     const NUM_RANDOM_OBJECTS = 6;
+    const NUM_DYNAMIC_OBJECTS = 10; // Number of dynamic objects to create
     const OBJECT_FRICTION = 0.7;
     const NORMAL_ARROW_LENGTH = 1;
     const NORMAL_ARROW_COLOR = 0xff0000; // Red for surface normals
@@ -87,7 +88,8 @@
       createPlanet();
       createRandomObjects(NUM_RANDOM_OBJECTS);
       createAlignedPlatforms();
-      createSurfaceCubes(); // Add this line to create surface-aligned cubes
+      createSurfaceCubes();
+      createDynamicObjects(NUM_DYNAMIC_OBJECTS); // Add dynamic objects
       
       // Create player after objects so we can position it above them
       createPlayer();
@@ -579,12 +581,10 @@
       if (player.grounded) {
         // When grounded, we need to counteract the tangential component of gravity
         if (player.lastContactNormal) {
-          // Calculate the normal and tangential components of gravity
-          const normal = player.lastContactNormal.clone();
           
           // Project gravity onto the normal to get normal component
           const gravityDir = netGravityForce.clone().normalize();
-          const normalComponent = normal.clone().multiplyScalar(gravityDir.dot(normal));
+          const normalComponent = player.lastContactNormal.clone().multiplyScalar(gravityDir.dot(player.lastContactNormal));
           
           // Calculate tangential component of gravity (parallel to surface)
           const tangentialComponent = new THREE.Vector3().subVectors(gravityDir, normalComponent);
@@ -608,7 +608,7 @@
           }
           
           // Apply normal force to keep player on the surface (similar to the existing code)
-          const stickDirection = normal.clone().negate();
+          const stickDirection = player.lastContactNormal.clone().negate();
           const stickForce = gravityStrength * GRAVITY_STRENGTH * 1.5; // Increased to prevent slipping
           
           player.body.applyImpulse(
@@ -1173,19 +1173,26 @@
       }
     }
 
+    // Keep only this single animate function and remove any duplicates
     function animate() {
       animationFrameId = requestAnimationFrame(animate);
       
       // Handle jumping
       handlePlayerJump();
       
-      // Apply gravity - add this line
+      // Apply gravity to player
       applyPointGravity();
       
-      // Handle player movement - now this also handles gravity for kinematic body
+      // Handle player movement
       handlePlayerMovement();
       
-      physicsWorld.step(eventQueue);
+      // Process collision events (needed before physics step)
+      eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+        // Optional: Handle collision events between physics objects
+      });
+      
+      // Step the physics world
+      physicsWorld.step();
       
       // Update collision arrow position if it exists
       if (collisionNormalArrow && player && player.body) {
@@ -1385,6 +1392,118 @@
           mass: cubeSize * 3,
           isSurfaceCube: true // Special flag to identify surface cubes
         });
+      }
+    }
+    
+    // Add this function to create dynamic objects that will be affected by gravity
+    function createDynamicObjects(count) {
+      const colors = [0xff5733, 0x33ff57, 0x3357ff, 0x9c27b0, 0xffc107];
+      const shapes = ['sphere', 'box'];
+      
+      // Create dynamic objects distributed around the planet
+      for (let i = 0; i < count; i++) {
+        // Use spherical distribution to position objects all around the planet
+        const phi = Math.acos(2 * Math.random() - 1); 
+        const theta = Math.random() * Math.PI * 2;
+        
+        // Calculate larger distance from planet center (higher height)
+        const distance = PLANET_RADIUS + 15 + Math.random() * 10; 
+        
+        // Convert spherical to Cartesian coordinates
+        const x = distance * Math.sin(phi) * Math.cos(theta);
+        const y = distance * Math.sin(phi) * Math.sin(theta);
+        const z = distance * Math.cos(phi);
+        
+        // Random size
+        const size = 0.3 + Math.random() * 0.4;
+        const mass = size * 3;
+        
+        // Choose shape type and color
+        const shapeType = shapes[Math.floor(Math.random() * shapes.length)];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        
+        // Create a dynamic rigid body
+        const bodyDesc = RAPIER.RigidBodyDesc.dynamic();
+        bodyDesc.setTranslation(x, y, z);
+        
+        // Add random initial rotation
+        const randomRotation = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI
+          )
+        );
+        
+        bodyDesc.setRotation({
+          x: randomRotation.x,
+          y: randomRotation.y,
+          z: randomRotation.z,
+          w: randomRotation.w
+        });
+        
+        // Create the rigid body
+        const body = physicsWorld.createRigidBody(bodyDesc);
+        
+        // Add a collider based on the shape type
+        let collider, geometry;
+        if (shapeType === 'box') {
+          collider = RAPIER.ColliderDesc.cuboid(size/2, size/2, size/2);
+          geometry = new THREE.BoxGeometry(size, size, size);
+        } else {
+          collider = RAPIER.ColliderDesc.ball(size/2);
+          geometry = new THREE.SphereGeometry(size/2, 20, 16);
+        }
+        
+        // Set physical properties
+        collider.setFriction(OBJECT_FRICTION);
+        collider.setRestitution(0.3); // Add some bounciness
+        collider.setDensity(1.0);     // Density affects mass
+        
+        physicsWorld.createCollider(collider, body);
+        
+        // Create the visual mesh
+        const material = new THREE.MeshStandardMaterial({ 
+          color: color,
+          roughness: 0.7,
+          metalness: 0.3
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+        
+        const obj = {
+          body,
+          mesh,
+          isFixed: false,
+          type: shapeType,
+          size: size,
+          mass: mass,
+          isDynamic: true
+        };
+        
+        objects.push(obj);
+        
+        // Apply initial force toward the planet
+        const planet = objects.find(obj => obj.type === 'planet');
+        if (planet) {
+          const planetPos = planet.body.translation();
+          const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+          const objPosition = new THREE.Vector3(x, y, z);
+          
+          // Direction from object to planet
+          const direction = new THREE.Vector3().subVectors(planetPosition, objPosition).normalize();
+          
+          // Apply an initial impulse toward the planet
+          const impulseStrength = 0.1 + Math.random() * 0.1;  // Random initial impulse
+          body.applyImpulse(
+            { 
+              x: direction.x * impulseStrength,
+              y: direction.y * impulseStrength,
+              z: direction.z * impulseStrength
+            }, 
+            true
+          );
+        }
       }
     }
   </script>
