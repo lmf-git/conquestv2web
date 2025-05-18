@@ -158,7 +158,8 @@
       
       const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS);
       playerColliderDesc.setFriction(0.7);
-      playerColliderDesc.setSensor(true); // Make it a sensor to detect collisions but not respond physically
+      // Remove the sensor flag to enable physical interactions
+      // playerColliderDesc.setSensor(true); // This line prevents physical interactions
       const collider = physicsWorld.createCollider(playerColliderDesc, playerBody);
       
       const playerMesh = new THREE.Mesh(
@@ -1186,6 +1187,9 @@
       // Handle player movement
       handlePlayerMovement();
       
+      // Call the new interaction handler
+      handlePlayerPhysicsInteractions();
+      
       // Process collision events (needed before physics step)
       eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         // Optional: Handle collision events between physics objects
@@ -1503,6 +1507,58 @@
             }, 
             true
           );
+        }
+      }
+    }
+
+    // Add this function to handle interactions between kinematic player and dynamic objects
+    function handlePlayerPhysicsInteractions() {
+      if (!player || !player.body) return;
+      
+      // Get the player's current velocity as a Vector3
+      const playerCurrentPos = player.body.translation();
+      const playerPrevPos = player.mesh.position.clone();
+      const playerVelocity = new THREE.Vector3(
+        playerCurrentPos.x - playerPrevPos.x,
+        playerCurrentPos.y - playerPrevPos.y,
+        playerCurrentPos.z - playerPrevPos.z
+      );
+      
+      // If the player is moving with sufficient speed
+      if (playerVelocity.length() > 0.01) {
+        // Find all dynamic objects near the player
+        for (const obj of objects) {
+          if (obj.isDynamic) {
+            const objPos = obj.body.translation();
+            const objPosition = new THREE.Vector3(objPos.x, objPos.y, objPos.z);
+            const playerPosition = new THREE.Vector3(playerCurrentPos.x, playerCurrentPos.y, playerCurrentPos.z);
+            
+            // Check if the object is within pushing range (adjusted by object size)
+            const pushRange = PLAYER_RADIUS + obj.size/2 + 0.1; // Small buffer
+            const distance = playerPosition.distanceTo(objPosition);
+            
+            if (distance < pushRange) {
+              // Calculate push direction (from player to object)
+              const pushDirection = new THREE.Vector3().subVectors(objPosition, playerPosition).normalize();
+              
+              // Calculate push strength based on player velocity and angle of impact
+              const velMagnitude = playerVelocity.length();
+              const dot = playerVelocity.clone().normalize().dot(pushDirection);
+              const pushStrength = Math.max(0, dot) * velMagnitude * 2.0; // Adjust multiplier as needed
+              
+              // Apply impulse to the dynamic object
+              if (pushStrength > 0.001) {
+                obj.body.applyImpulse(
+                  {
+                    x: pushDirection.x * pushStrength,
+                    y: pushDirection.y * pushStrength,
+                    z: pushDirection.z * pushStrength
+                  },
+                  true
+                );
+              }
+            }
+          }
         }
       }
     }
