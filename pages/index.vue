@@ -86,6 +86,8 @@
       // Create planet first
       createPlanet();
       createRandomObjects(NUM_RANDOM_OBJECTS);
+      createAlignedPlatforms();
+      createSurfaceCubes(); // Add this line to create surface-aligned cubes
       
       // Create player after objects so we can position it above them
       createPlayer();
@@ -1208,6 +1210,182 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    // Add this function to create gravity-aligned platforms
+    function createAlignedPlatforms() {
+      // Create several platforms positioned around the planet
+      const platformPositions = [
+        { x: 5, y: 5, z: 0 },
+        { x: -5, y: 5, z: 2 },
+        { x: 0, y: 5, z: 5 },
+        { x: 2, y: -5, z: 4 }
+      ];
+      
+      const platformSizes = [1.5, 2, 1.8, 2.5];
+      const platformColors = [0xFF5733, 0x33FF57, 0x3357FF, 0xFF33F5];
+      
+      for (let i = 0; i < platformPositions.length; i++) {
+        const pos = platformPositions[i];
+        const size = platformSizes[i % platformSizes.length];
+        const color = platformColors[i % platformColors.length];
+        
+        // Create the body
+        const bodyDesc = RAPIER.RigidBodyDesc.fixed();
+        bodyDesc.setTranslation(pos.x, pos.y, pos.z);
+        
+        // Important: align the platform to face the planet center
+        const planet = objects.find(obj => obj.type === 'planet');
+        if (planet) {
+          const planetPos = planet.body.translation();
+          const platformPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+          
+          // Direction from planet to platform (this is our "up" direction)
+          const upDir = new THREE.Vector3().subVectors(platformPos, 
+            new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z)).normalize();
+          
+          // We need a rotation that aligns the platform's y-axis with this direction
+          const worldUp = new THREE.Vector3(0, 1, 0);
+          const rotationQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, upDir);
+          
+          // Set the rotation to align with planet gravity
+          bodyDesc.setRotation({
+            x: rotationQuat.x,
+            y: rotationQuat.y,
+            z: rotationQuat.z,
+            w: rotationQuat.w
+          });
+        }
+        
+        const body = physicsWorld.createRigidBody(bodyDesc);
+        
+        // Create a slightly thinner box for the platform
+        const height = size / 4;  // Make it a flat platform
+        const collider = RAPIER.ColliderDesc.cuboid(size/2, height/2, size/2);
+        collider.setFriction(OBJECT_FRICTION * 1.5); // Higher friction for platforms
+        physicsWorld.createCollider(collider, body);
+        
+        // Create the mesh
+        const geometry = new THREE.BoxGeometry(size, height, size);
+        const material = new THREE.MeshStandardMaterial({ 
+          color: color,
+          roughness: 0.7,
+          metalness: 0.2
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+        
+        // Add to objects array
+        const obj = {
+          body,
+          mesh,
+          isFixed: true,
+          type: 'box',
+          size: size,
+          mass: size * 2,
+          isPlatform: true // Mark as platform for special handling
+        };
+        
+        objects.push(obj);
+        
+        // Add normal arrow for top face only (cleaner look)
+        const pos3 = body.translation();
+        const rot = body.rotation();
+        const position = new THREE.Vector3(pos3.x, pos3.y, pos3.z);
+        const quaternion = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
+        
+        // Just add the up-facing normal
+        const topNormal = new THREE.Vector3(0, 1, 0);
+        const worldNormal = topNormal.clone().applyQuaternion(quaternion);
+        const localPos = new THREE.Vector3(0, height/2, 0);
+        const worldPos = position.clone().add(localPos.applyQuaternion(quaternion));
+        
+        const arrow = new THREE.ArrowHelper(
+          worldNormal,
+          worldPos,
+          NORMAL_ARROW_LENGTH,
+          0x00FFFF, // Cyan color to distinguish platform normals
+          0.2,
+          0.1
+        );
+        scene.add(arrow);
+        normalArrows.push(arrow);
+      }
+    }
+    
+    // Add this function to create cubes that are perfectly aligned to the planet surface
+    function createSurfaceCubes() {
+      // Distribution pattern around the planet
+      const radius = PLANET_RADIUS + 0.05; // Position slightly above the surface
+      const cubeSize = 1.2; // Size of the cubes
+      
+      // Create cubes in a spiral pattern around the planet
+      const numCubes = 8;
+      const colors = [0x3498db, 0xe74c3c, 0x2ecc71, 0xf39c12, 0x9b59b6];
+      
+      for (let i = 0; i < numCubes; i++) {
+        // Create spiral pattern positions
+        const phi = Math.acos(-1 + (2 * i) / numCubes);
+        const theta = Math.sqrt(numCubes * Math.PI) * phi;
+        
+        // Convert to Cartesian coordinates
+        const x = radius * Math.sin(phi) * Math.cos(theta);
+        const y = radius * Math.sin(phi) * Math.sin(theta);
+        const z = radius * Math.cos(phi);
+        
+        // Get planet position
+        const planet = objects.find(obj => obj.type === 'planet');
+        if (!planet) continue;
+        
+        const planetPos = planet.body.translation();
+        const cubePos = new THREE.Vector3(x, y, z);
+        
+        // Direction from planet center to cube position (this is our "up" vector)
+        const upDir = new THREE.Vector3().subVectors(cubePos, 
+          new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z)).normalize();
+        
+        // Create a rotation that aligns the cube with the planet surface
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        const rotationQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, upDir);
+        
+        // Create rigid body
+        const bodyDesc = RAPIER.RigidBodyDesc.fixed();
+        bodyDesc.setTranslation(x, y, z);
+        bodyDesc.setRotation({
+          x: rotationQuat.x,
+          y: rotationQuat.y,
+          z: rotationQuat.z,
+          w: rotationQuat.w
+        });
+        
+        const body = physicsWorld.createRigidBody(bodyDesc);
+        
+        // Create collider (slightly smaller than visual cube for better alignment)
+        const collider = RAPIER.ColliderDesc.cuboid(cubeSize/2 * 0.9, cubeSize/2 * 0.9, cubeSize/2 * 0.9);
+        collider.setFriction(OBJECT_FRICTION * 2); // Extra friction for stability
+        physicsWorld.createCollider(collider, body);
+        
+        // Create visual mesh
+        const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+        const material = new THREE.MeshStandardMaterial({ 
+          color: colors[i % colors.length],
+          roughness: 0.5,
+          metalness: 0.2
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+        
+        // Add to objects array
+        objects.push({
+          body,
+          mesh,
+          isFixed: true,
+          type: 'box',
+          size: cubeSize,
+          mass: cubeSize * 3,
+          isSurfaceCube: true // Special flag to identify surface cubes
+        });
+      }
     }
   </script>
 
