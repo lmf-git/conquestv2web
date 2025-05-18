@@ -955,6 +955,11 @@
       
       // Handle the closest collision
       if (closestNormal) {
+        // Store previous grounded state and normal for comparison FIRST
+        // Move these declarations earlier to avoid reference errors
+        const wasGrounded = player.grounded;
+        const prevNormal = player.lastContactNormal ? player.lastContactNormal.clone() : null;
+        
         // Calculate the slope angle differently based on the local gravity direction
         let isSteepSlope = false;
         
@@ -963,56 +968,67 @@
         
         // Determine the "up" vector based on context
         let upVector;
+        let gravityBasedUp = null;
         
-        if (planet && closestHit && closestHit.type === 'planet') {
-          // On planet: "up" is away from planet center (along the surface normal)
-          upVector = closestNormal.clone(); // Surface normal is already pointing away from center
-          
-          // For planets, we don't consider standard slopes, but we do consider
-          // extreme angles that might occur with other objects on the planet
-          const surfaceAngle = 0;  // No steep slopes on smooth planet surface
-          isSteepSlope = false;    // Planet surface is always walkable
-        } 
-        else if (planet && !player.falling) {
-          // Not on planet but affected by planet gravity
-          // Get player's direction away from planet center
+        // First, if we have a planet, always calculate a gravity-based "up" vector
+        if (planet) {
           const planetPos = planet.body.translation();
           const playerPos = player.body.translation();
-          upVector = new THREE.Vector3(
+          gravityBasedUp = new THREE.Vector3(
             playerPos.x - planetPos.x,
             playerPos.y - planetPos.y,
             playerPos.z - planetPos.z
           ).normalize();
+        }
+        
+        if (planet && closestHit && closestHit.type === 'planet') {
+          // On planet: "up" is away from planet center (along the surface normal)
+          upVector = closestNormal.clone(); // Surface normal is already pointing away from center
+          isSteepSlope = false;    // Planet surface is always walkable
+        } 
+        else if (gravityBasedUp) {
+          // For any other object under planet gravity
+          upVector = gravityBasedUp;
           
-          // Calculate angle between surface normal and up vector (gravity direction)
+          // Calculate angle between surface normal and gravity-based up vector
           const angle = Math.acos(closestNormal.dot(upVector));
-          isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+          
+          // More forgiving slope detection:
+          // 1. Use a higher threshold for planet-aligned objects
+          // 2. Consider the distance from planet center
+          
+          if (angle < 0.4) { // About 23 degrees - easily walkable
+            isSteepSlope = false;
+          }
+          else if (planet) {
+            // Check if object is on planet surface (more permissive for planet-aligned objects)
+            const planetPos = planet.body.translation();
+            const playerPos = nextPosition.clone();
+            const distanceToCenter = playerPos.distanceTo(new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z));
+            
+            // More forgiving for objects closer to planet surface
+            const planetProximityFactor = Math.max(0, Math.min(1, 
+              1.0 - (distanceToCenter - PLANET_RADIUS) / (PLANET_RADIUS * 0.5)
+            ));
+            
+            // Scale walkable slope based on proximity to planet
+            const adjustedSlope = MAX_WALKABLE_SLOPE * (1 + planetProximityFactor * 0.5);
+            isSteepSlope = angle > adjustedSlope;
+          }
+          else {
+            // Default case - use standard threshold
+            isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+          }
         } 
         else {
-          // Default case: use world up vector
+          // No planet - fall back to world up
           upVector = new THREE.Vector3(0, 1, 0);
           const angle = Math.acos(closestNormal.dot(upVector));
           isSteepSlope = angle > MAX_WALKABLE_SLOPE;
         }
         
-        // Visualize gravity-relative "up" direction for debugging
-        // Comment out if not needed
-        if (collisionNormalArrow) {
-          scene.remove(collisionNormalArrow);
-        }
-        collisionNormalArrow = new THREE.ArrowHelper(
-          closestNormal,
-          nextPosition,
-          NORMAL_ARROW_LENGTH * 1.5,
-          COLLISION_ARROW_COLOR,
-          0.3,
-          0.15
-        );
-        scene.add(collisionNormalArrow);
-        
-        // Store previous grounded state and normal for comparison
-        const wasGrounded = player.grounded;
-        const prevNormal = player.lastContactNormal ? player.lastContactNormal.clone() : null;
+        // Store collision normal separately for slide calculations
+        const slideNormal = closestNormal.clone();
         
         // Don't re-ground the player immediately if they just went off an edge
         if (player.edgeDetectionCounter > 0) {
@@ -1041,9 +1057,6 @@
         if (!isSteepSlope || !prevNormal || !wasGrounded) {
           player.lastContactNormal = closestNormal.clone();
         }
-        
-        // Store collision normal separately for slide calculations
-        const slideNormal = closestNormal.clone();
         
         // Reset fall speed when any collision happens, even if not grounded
         player.fallSpeed = 0;
@@ -1083,8 +1096,8 @@
           if (moveTowardSlope < 0 || (wasGrounded && prevNormal && prevNormal.dot(closestNormal) > 0.7)) {
             player.onSteepSlope = true;
             
-            // Find the global up vector in player's local space
-            const gravityDir = new THREE.Vector3(0, -1, 0);
+            // Use gravity-based up vector for slide calculations if available
+            const gravityDir = gravityBasedUp ? gravityBasedUp.clone().negate() : new THREE.Vector3(0, -1, 0);
             
             // Calculate slide direction (project gravity onto the surface plane using slide normal)
             const proj = gravityDir.dot(slideNormal);
