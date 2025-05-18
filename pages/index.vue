@@ -1174,6 +1174,77 @@
       }
     }
 
+    // Add this function to apply gravity to dynamic objects
+    function applyDynamicObjectsGravity() {
+      // Find the planet
+      const planet = objects.find(obj => obj.type === 'planet');
+      if (!planet || !planet.body) return;
+      
+      const planetPos = planet.body.translation();
+      const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+      
+      // Apply gravity to all dynamic objects
+      for (const obj of objects) {
+        if (!obj.isDynamic || !obj.body) continue;
+        
+        const objPos = obj.body.translation();
+        const objPosition = new THREE.Vector3(objPos.x, objPos.y, objPos.z);
+        
+        // Calculate direction and distance to planet center
+        const direction = new THREE.Vector3().subVectors(planetPosition, objPosition);
+        const distance = direction.length();
+        
+        // Skip if too close to prevent extreme forces
+        if (distance < PLANET_RADIUS * 0.9) {
+          // Object is inside or very close to the planet - move it out
+          const normalized = direction.clone().normalize();
+          const correctionDistance = PLANET_RADIUS * 1.05 - distance;
+          
+          if (correctionDistance > 0) {
+            obj.body.setTranslation({
+              x: objPos.x - normalized.x * correctionDistance,
+              y: objPos.y - normalized.y * correctionDistance,
+              z: objPos.z - normalized.z * correctionDistance
+            }, true);
+          }
+          continue;
+        }
+        
+        // Calculate gravity force with inverse square law (F = G * m1 * m2 / r^2)
+        const forceMagnitude = GRAVITY_STRENGTH * obj.mass * planet.mass / (distance * distance);
+        direction.normalize();
+        
+        // Scale force by delta time (0.016 is roughly 60fps)
+        const timeScale = 0.016;
+        const scaledForce = forceMagnitude * timeScale;
+        
+        // Get current velocity
+        const vel = obj.body.linvel();
+        
+        // Calculate new velocity with gravity applied
+        const newVel = {
+          x: vel.x + direction.x * scaledForce,
+          y: vel.y + direction.y * scaledForce,
+          z: vel.z + direction.z * scaledForce
+        };
+        
+        // Apply the new velocity
+        obj.body.setLinvel(newVel, true);
+        
+        // Apply small damping to prevent perpetual orbits (if desired)
+        // Comment this out if you want objects to orbit forever
+        const dampingFactor = 0.9998;
+        obj.body.setLinvel(
+          { 
+            x: newVel.x * dampingFactor,
+            y: newVel.y * dampingFactor, 
+            z: newVel.z * dampingFactor 
+          }, 
+          true
+        );
+      }
+    }
+
     // Keep only this single animate function and remove any duplicates
     function animate() {
       animationFrameId = requestAnimationFrame(animate);
@@ -1184,10 +1255,13 @@
       // Apply gravity to player
       applyPointGravity();
       
+      // Apply gravity to dynamic objects (new function call)
+      applyDynamicObjectsGravity();
+      
       // Handle player movement
       handlePlayerMovement();
       
-      // Call the new interaction handler
+      // Call the interaction handler
       handlePlayerPhysicsInteractions();
       
       // Process collision events (needed before physics step)
@@ -1459,10 +1533,12 @@
           geometry = new THREE.SphereGeometry(size/2, 20, 16);
         }
         
-        // Set physical properties
+        // Set physical properties - enable CCD for more accurate collisions
         collider.setFriction(OBJECT_FRICTION);
         collider.setRestitution(0.3); // Add some bounciness
         collider.setDensity(1.0);     // Density affects mass
+        // Enable continuous collision detection for accurate high-speed collisions
+        collider.setCcdEnabled(true);
         
         physicsWorld.createCollider(collider, body);
         
@@ -1498,13 +1574,31 @@
           const direction = new THREE.Vector3().subVectors(planetPosition, objPosition).normalize();
           
           // Apply an initial impulse toward the planet
-          const impulseStrength = 0.1 + Math.random() * 0.1;  // Random initial impulse
+          const impulseStrength = 0.3 + Math.random() * 0.2;  // Increased strength
           body.applyImpulse(
             { 
               x: direction.x * impulseStrength,
               y: direction.y * impulseStrength,
               z: direction.z * impulseStrength
             }, 
+            true
+          );
+          
+          // Add a slight tangential velocity component for potential orbiting
+          const tangent = new THREE.Vector3(
+            Math.random() - 0.5,
+            Math.random() - 0.5,
+            Math.random() - 0.5
+          ).normalize();
+          tangent.cross(direction);
+          
+          const tangentialStrength = impulseStrength * 0.4 * Math.random();
+          body.applyImpulse(
+            {
+              x: tangent.x * tangentialStrength,
+              y: tangent.y * tangentialStrength,
+              z: tangent.z * tangentialStrength
+            },
             true
           );
         }
