@@ -13,6 +13,7 @@ const GRAVITY_STRENGTH = 20;
 const PLANET_RADIUS = 5;
 const PLAYER_RADIUS = 0.2;
 const PLAYER_HEIGHT = 0.8;
+const GRAVITY_ACCELERATION = 0.01; // Constant gravity acceleration for all objects
 
 const canvas = ref(null);
 let renderer, scene, camera, physicsWorld, animationFrameId;
@@ -105,10 +106,8 @@ function createPlayer() {
     mesh: playerMesh,
     collider: collider,
     velocity: new THREE.Vector3(0, 0, 0),
-    grounded: false,
     falling: true,
-    lastContactNormal: null,
-    fallSpeed: 0.1
+    lastContactNormal: null
   };
 }
 
@@ -236,14 +235,11 @@ function applyPointGravity() {
   
   if (closestObj) {
     if (player.falling) {
-      // Increase fall speed gradually
-      player.fallSpeed = Math.min(player.fallSpeed + 0.005, 0.2);
-      
-      // Move player in gravity direction
+      // Apply constant gravity acceleration
       const newPosition = new THREE.Vector3(
-        playerPos.x + gravityDir.x * player.fallSpeed * GRAVITY_STRENGTH * 0.01,
-        playerPos.y + gravityDir.y * player.fallSpeed * GRAVITY_STRENGTH * 0.01,
-        playerPos.z + gravityDir.z * player.fallSpeed * GRAVITY_STRENGTH * 0.01
+        playerPos.x + gravityDir.x * GRAVITY_ACCELERATION * GRAVITY_STRENGTH,
+        playerPos.y + gravityDir.y * GRAVITY_ACCELERATION * GRAVITY_STRENGTH,
+        playerPos.z + gravityDir.z * GRAVITY_ACCELERATION * GRAVITY_STRENGTH
       );
       
       player.body.setTranslation({
@@ -251,7 +247,7 @@ function applyPointGravity() {
         y: newPosition.y,
         z: newPosition.z
       });
-    } else if (player.grounded && player.lastContactNormal) {
+    } else if (!player.falling && player.lastContactNormal) {
       // When grounded, apply a small force to keep player on the surface
       const stickDirection = player.lastContactNormal.clone().negate();
       const stickForce = 0.001 * GRAVITY_STRENGTH;
@@ -275,8 +271,9 @@ function applyPointGravity() {
 function checkCollisions() {
   if (!player || !player.body) return;
   
-  // Reset grounded state each frame
-  player.grounded = false;
+  // Reset falling state to true by default
+  // We'll set it to false if we detect a collision
+  player.falling = true;
   
   const playerPos = player.body.translation();
   const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
@@ -338,10 +335,8 @@ function checkCollisions() {
     
     // If collision found, update player state
     if (collisionNormal && distance <= 0.05) {
-      player.grounded = true;
       player.falling = false;
       player.lastContactNormal = collisionNormal;
-      player.fallSpeed = 0;
       
       // Align player with the surface normal
       alignPlayerToSurface(collisionNormal);
@@ -358,11 +353,6 @@ function checkCollisions() {
       
       break;
     }
-  }
-  
-  // If not grounded, player is falling
-  if (!player.grounded) {
-    player.falling = true;
   }
 }
 
