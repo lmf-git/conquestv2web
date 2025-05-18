@@ -171,7 +171,9 @@
         maxFallSpeed: 0.3, // Max fall speed
         manualControl: true,
         mass: 1, // Mass for gravity calculations
-        nextPosition: null // For storing the next position to move to
+        nextPosition: null, // For storing the next position to move to
+        jumpDirection: null, // To store jump direction vector
+        isJumping: false     // Flag to track active jump state
       };
     }
 
@@ -631,35 +633,40 @@
       } 
       // If falling or jumping, allow limited air control
       else if (player.falling) {
-        // Apply gravity toward the planet
-        const planet = objects.find(obj => obj.type === 'planet');
-        if (planet && planet.body) {
-          const planetPos = planet.body.translation();
-          const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+        // If actively jumping, use the stored jump direction throughout
+        if (player.isJumping && player.jumpDirection) {
+          // Use stored jump direction for the entire jump arc
+          newPosition.add(player.jumpDirection.clone().multiplyScalar(-player.fallSpeed));
           
-          // Direction from player to planet center
-          const gravityDir = new THREE.Vector3().subVectors(planetPosition, newPosition).normalize();
+          // Gradually decrease upward movement and transition to falling
+          player.fallSpeed = Math.min(player.fallSpeed + 0.01, player.maxFallSpeed);
           
-          // Increase fall speed gradually
-          player.fallSpeed = Math.min(player.fallSpeed + 0.005, player.maxFallSpeed);
-          
-          // Apply gravity movement
-          newPosition.add(gravityDir.multiplyScalar(player.fallSpeed));
-          
-          // Apply air control (reduced movement in air)
-          if (moveDirection.length() > 0) {
-            // Make sure air movement doesn't counteract gravity too much
-            const airMovement = worldMoveDir.clone();
-            const projOnGravity = airMovement.dot(gravityDir);
-            
-            // Remove upward component against gravity
-            if (projOnGravity < 0) {
-              airMovement.sub(gravityDir.clone().multiplyScalar(projOnGravity));
-            }
-            
-            // Apply reduced air control
-            newPosition.add(airMovement.multiplyScalar(MOVE_SPEED * 0.3));
+          // When fallSpeed becomes positive, we're now falling down
+          if (player.fallSpeed > 0) {
+            player.isJumping = false; // End the jumping phase
           }
+        } else {
+          // Standard gravity toward the planet
+          const planet = objects.find(obj => obj.type === 'planet');
+          if (planet && planet.body) {
+            const planetPos = planet.body.translation();
+            const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+            
+            // Direction from player to planet center
+            const gravityDir = new THREE.Vector3().subVectors(planetPosition, newPosition).normalize();
+            
+            // Increase fall speed gradually
+            player.fallSpeed = Math.min(player.fallSpeed + 0.005, player.maxFallSpeed);
+            
+            // Apply gravity movement
+            newPosition.add(gravityDir.multiplyScalar(player.fallSpeed));
+          }
+        }
+        
+        // Apply air control (reduced movement in air)
+        if (moveDirection.length() > 0) {
+          // Apply reduced air control
+          newPosition.add(worldMoveDir.multiplyScalar(MOVE_SPEED * 0.3));
         }
       }
       
@@ -843,8 +850,13 @@
       if (!player || !player.grounded || player.jumpCooldown > 0) return;
       
       if (keys.space) {
-        // Get the normal direction to jump along
-        const jumpDirection = player.lastContactNormal || new THREE.Vector3(0, 1, 0);
+        // Use the collision normal directly as jump direction
+        // This is the same direction shown by the green arrow
+        const jumpDirection = player.lastContactNormal.clone().normalize();
+        
+        // Store jump direction for use in movement
+        player.jumpDirection = jumpDirection.clone();
+        player.isJumping = true;
         
         // Set initial jump velocity (for animation purposes)
         player.velocity = jumpDirection.clone().multiplyScalar(JUMP_FORCE);
