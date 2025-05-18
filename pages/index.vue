@@ -506,16 +506,9 @@
           );
           scene.add(collisionNormalArrow);
           
-          // Align player with surface
-          const upVector = new THREE.Vector3(0, 1, 0);
-          const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, collisionNormal);
-          
-          player.body.setRotation({
-            x: alignmentQuat.x,
-            y: alignmentQuat.y,
-            z: alignmentQuat.z,
-            w: alignmentQuat.w
-          });
+          // Don't align player here anymore, since we're doing it in handlePlayerMovement
+          // This prevents overriding the planetary orientation
+          // Instead, just store the normal for use in slope detection
           
           break;
         }
@@ -527,7 +520,7 @@
       }
     }
 
-    // Update the point gravity function to emphasize planet gravity
+    // Update the point gravity function to use GRAVITY_STRENGTH and apply to grounded state
     function applyPointGravity() {
       if (!player || !player.body) return;
       
@@ -550,7 +543,7 @@
         // Skip if too close to prevent extreme forces
         if (distance >= 0.1) {
           // Calculate gravity force (F = G * m1 * m2 / r^2)
-          const forceMagnitude = POINT_GRAVITY_STRENGTH * player.mass * planet.mass / (distance * distance);
+          const forceMagnitude = GRAVITY_STRENGTH * player.mass * planet.mass / (distance * distance);
           
           // Add to net force (normalized direction * force magnitude)
           netGravityForce.add(direction.normalize().multiplyScalar(forceMagnitude));
@@ -578,16 +571,63 @@
         netGravityForce.add(direction.normalize().multiplyScalar(forceMagnitude));
       }
       
-      // Apply the gravity force to player's velocity
-      if (player.falling && !player.grounded) {
+      // Always apply the gravity force, but handle differently based on player state
+      const gravityStrength = 0.001; // Base gravity scaling factor
+      
+      if (player.grounded) {
+        // When grounded, we need to counteract the tangential component of gravity
+        if (player.lastContactNormal) {
+          // Calculate the normal and tangential components of gravity
+          const normal = player.lastContactNormal.clone();
+          
+          // Project gravity onto the normal to get normal component
+          const gravityDir = netGravityForce.clone().normalize();
+          const normalComponent = normal.clone().multiplyScalar(gravityDir.dot(normal));
+          
+          // Calculate tangential component of gravity (parallel to surface)
+          const tangentialComponent = new THREE.Vector3().subVectors(gravityDir, normalComponent);
+          
+          // Only apply normal component if player is not actively moving
+          if (player.momentum.length() < 0.01) {
+            // Cancel out tangential component by applying equal and opposite force
+            // This prevents sliding on slopes when player isn't actively moving
+            const counterForce = tangentialComponent.clone().negate().multiplyScalar(
+              gravityStrength * GRAVITY_STRENGTH * 2.0 // Stronger to overcome gravity
+            );
+            
+            player.body.applyImpulse(
+              {
+                x: counterForce.x,
+                y: counterForce.y,
+                z: counterForce.z
+              },
+              true
+            );
+          }
+          
+          // Apply normal force to keep player on the surface (similar to the existing code)
+          const stickDirection = normal.clone().negate();
+          const stickForce = gravityStrength * GRAVITY_STRENGTH * 1.5; // Increased to prevent slipping
+          
+          player.body.applyImpulse(
+            { 
+              x: stickDirection.x * stickForce,
+              y: stickDirection.y * stickForce, 
+              z: stickDirection.z * stickForce 
+            }, 
+            true
+          );
+        }
+      } else {
+        // When in air (falling or jumping), apply full gravity
+        // Use a stronger force while falling
+        const fallMultiplier = player.isJumping ? 0.5 : 1.0; // Less gravity during jump apex
         const currentVel = player.body.linvel();
         let newVelocity = new THREE.Vector3(currentVel.x, currentVel.y, currentVel.z);
         
-        // Scale the force for gameplay purposes
-        const scaleFactor = 0.001;
-        newVelocity.add(netGravityForce.multiplyScalar(scaleFactor));
+        // Apply gravity with appropriate scaling
+        newVelocity.add(netGravityForce.multiplyScalar(gravityStrength * fallMultiplier));
         
-        // Apply velocity
         player.body.setLinvel({
           x: newVelocity.x,
           y: newVelocity.y,
@@ -595,8 +635,8 @@
         }, true);
       }
     }
-
-    // Completely rewrite the movement function for kinematic control
+    
+    // Also update handlePlayerMovement to add more friction when standing still
     function handlePlayerMovement() {
       if (!player || !player.body) return;
       
@@ -635,6 +675,28 @@
       // If grounded, move along the surface using the contact normal
       if (player.grounded && player.lastContactNormal) {
         const normal = player.lastContactNormal;
+        
+        // Add a small gravity component to press the player against the surface
+        const planet = objects.find(obj => obj.type === 'planet');
+        if (planet && planet.body) {
+          const planetPos = planet.body.translation();
+          const planetPosition = new THREE.Vector3(planetPos.x, planetPos.y, planetPos.z);
+          
+          // Direction from player to planet center
+          const gravityDir = new THREE.Vector3().subVectors(planetPosition, prevPos).normalize();
+          
+          // Only add gravity if not moving (to prevent sliding)
+          if (moveDirection.length() === 0) {
+            // Apply stronger surface adhesion to prevent sliding
+            newPosition.add(gravityDir.multiplyScalar(0.002 * GRAVITY_STRENGTH));
+            
+            // Reset momentum when standing still to prevent sliding
+            player.momentum.multiplyScalar(0.5); // More aggressive friction when still
+          } else {
+            // Regular adhesion when moving
+            newPosition.add(gravityDir.multiplyScalar(0.001 * GRAVITY_STRENGTH));
+          }
+        }
         
         // If on a steep slope, slide down
         if (player.onSteepSlope && player.slideDirection) {
@@ -746,26 +808,41 @@
         }
       }
       
+      // Always update player orientation relative to the planet
+      const planet = objects.find(obj => obj.type === 'planet');
+      if (planet && player) {
+        const planetPos = planet.body.translation();
+        const playerPos = player.body.translation();
+        
+        // Direction from planet to player (this is the "up" direction for the player)
+        const upDirection = new THREE.Vector3(
+          playerPos.x - planetPos.x,
+          playerPos.y - planetPos.y, 
+          playerPos.z - planetPos.z
+        ).normalize();
+        
+        // Only use contact normal when on steep slopes or special surfaces
+        // Otherwise, always orient based on direction to planet center
+        if ((!player.onSteepSlope && player.grounded) || !player.lastContactNormal) {
+          // Align player with planet gravity
+          const worldUp = new THREE.Vector3(0, 1, 0);
+          const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, upDirection);
+          
+          player.body.setRotation({
+            x: alignmentQuat.x,
+            y: alignmentQuat.y,
+            z: alignmentQuat.z,
+            w: alignmentQuat.w
+          });
+        }
+      }
+      
       // Check for potential collisions before applying movement
       player.nextPosition = newPosition;
       checkCollisionsAndResolve();
-      
-      // Only update rotation when grounded, not sliding on a steep slope,
-      // and there's a contact normal
-      if (player.grounded && player.lastContactNormal && !player.onSteepSlope) {
-        const upVector = new THREE.Vector3(0, 1, 0);
-        const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(upVector, player.lastContactNormal);
-        
-        player.body.setRotation({
-          x: alignmentQuat.x,
-          y: alignmentQuat.y,
-          z: alignmentQuat.z,
-          w: alignmentQuat.w
-        });
-      }
     }
     
-    // Update checkCollisionsAndResolve to improve slope detection
+    // Update checkCollisionsAndResolve to not overwrite planetary orientation
     function checkCollisionsAndResolve() {
       if (!player || !player.body || !player.mesh || !player.nextPosition) return;
       
@@ -878,10 +955,19 @@
       
       // Handle the closest collision
       if (closestNormal) {
-        // Calculate the slope angle once for use in different checks
-        const upVector = new THREE.Vector3(0, 1, 0);
-        const angle = Math.acos(closestNormal.dot(upVector));
-        const isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+        // Calculate the slope angle differently based on the object type
+        let isSteepSlope = false;
+        
+        if (closestHit && closestHit.type === 'planet') {
+          // For planets, we don't use the steep slope logic 
+          // All points on the sphere are valid standing positions
+          isSteepSlope = false; 
+        } else {
+          // For regular objects, use the normal steep slope calculation
+          const upVector = new THREE.Vector3(0, 1, 0);
+          const angle = Math.acos(closestNormal.dot(upVector));
+          isSteepSlope = angle > MAX_WALKABLE_SLOPE;
+        }
         
         // Store previous grounded state and normal for comparison
         const wasGrounded = player.grounded;
@@ -1036,6 +1122,9 @@
       
       // Handle jumping
       handlePlayerJump();
+      
+      // Apply gravity - add this line
+      applyPointGravity();
       
       // Handle player movement - now this also handles gravity for kinematic body
       handlePlayerMovement();
