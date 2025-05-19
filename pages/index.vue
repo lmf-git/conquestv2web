@@ -141,9 +141,14 @@ async function initPhysics() {
   // Create the terrain collider
   world.createCollider(terrainColliderDesc);
 
-  // Create player rigid body
+  // Create player rigid body with initial position high above terrain
+  const spawnHeight = 20; // Keep same as in initThree
   const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-    .setTranslation(0, PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT/2, 0);
+    .setTranslation(
+      0, 
+      PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT/2 + spawnHeight, 
+      0
+    );
   playerBody = world.createRigidBody(playerBodyDesc);
   
   // Create player collider (capsule)
@@ -221,9 +226,27 @@ function initThree() {
   playerMesh.castShadow = true;
   scene.add(playerMesh);
   
-  // Set initial player position
-  const initialPosition = new THREE.Vector3(0, PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT/2, 0);
-  updatePlayerPosition(initialPosition);
+  // Set initial player position high above terrain
+  const spawnHeight = 20;
+  const initialPosition = new THREE.Vector3(
+    0, 
+    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT/2 + spawnHeight,
+    0
+  );
+  
+  // Use the gravity direction as initial surface normal and up vector
+  const initialGravityUp = initialPosition.clone().sub(GRAVITY_CENTER).normalize();
+  
+  // Call with all required parameters
+  updatePlayerPositionAndOrientation(
+    initialPosition, 
+    initialGravityUp, 
+    false, // not on surface initially
+    initialGravityUp
+  );
+  
+  // Reset player velocity to ensure clean falling
+  playerState.velocity.set(0, 0, 0);
   
   // Add event listeners
   window.addEventListener('resize', onWindowResize);
@@ -231,39 +254,90 @@ function initThree() {
   window.addEventListener('keyup', onKeyUp);
 }
 
-// Update player position and orientation based on physics
-function updatePlayerPosition(position) {
+// Update player position and orientation based on surface normal and gravity
+function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, gravityUp) {
+  // Ensure we have valid vectors to work with
+  if (!position) return;
+  if (!surfaceNormal) surfaceNormal = new THREE.Vector3(0, 1, 0);
+  if (!gravityUp) {
+    // If no gravity up is provided, calculate from position
+    gravityUp = position.clone().sub(GRAVITY_CENTER).normalize();
+  }
+  
   // Set player position
   playerMesh.position.copy(position);
   
-  // Calculate up vector (away from planet center)
-  const up = position.clone().sub(GRAVITY_CENTER).normalize();
+  // Create a quaternion for orientation
+  let orientationQuaternion;
   
-  // Calculate right and forward vectors based on up vector
-  const right = new THREE.Vector3(1, 0, 0).cross(up).normalize();
-  const forward = up.clone().cross(right).normalize();
+  if (onSurface) {
+    // Create a weighted blend between gravity up and surface normal
+    const angle = Math.acos(THREE.MathUtils.clamp(gravityUp.dot(surfaceNormal), -1, 1));
+    const maxSlopeAngle = Math.PI / 4; // 45 degrees
+    const blendFactor = Math.min(angle / maxSlopeAngle, 1.0);
+    
+    const blendedUp = new THREE.Vector3()
+      .addScaledVector(gravityUp, 1.0) 
+      .addScaledVector(surfaceNormal, blendFactor * 2)
+      .normalize();
+    
+    // Find a stable forward direction
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    let right = new THREE.Vector3().crossVectors(worldUp, blendedUp);
+    
+    // If right is too small, use a different reference direction
+    if (right.lengthSq() < 0.01) {
+      right = new THREE.Vector3(1, 0, 0);
+    }
+    
+    right.normalize();
+    
+    // Calculate forward from right and up
+    const forward = new THREE.Vector3().crossVectors(right, blendedUp).normalize();
+    
+    // Create the orientation matrix
+    const orientationMatrix = new THREE.Matrix4().makeBasis(right, blendedUp, forward);
+    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
+  } else {
+    // When in air, align with gravity
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    let right = new THREE.Vector3().crossVectors(worldUp, gravityUp);
+    
+    if (right.lengthSq() < 0.01) {
+      right = new THREE.Vector3(1, 0, 0);
+    }
+    
+    right.normalize();
+    const forward = new THREE.Vector3().crossVectors(right, gravityUp).normalize();
+    
+    // Create the orientation matrix
+    const orientationMatrix = new THREE.Matrix4().makeBasis(right, gravityUp, forward);
+    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
+  }
   
-  // Apply orientation
-  playerMesh.quaternion.setFromRotationMatrix(
-    new THREE.Matrix4().makeBasis(right, up, forward)
-  );
+  // Apply the orientation to the capsule
+  playerMesh.quaternion.copy(orientationQuaternion);
   
-  // Update physics body
-  if (physicsInitialized) {
+  // Update physics body - only if it exists and orientation is valid
+  if (physicsInitialized && playerBody && orientationQuaternion) {
     playerBody.setTranslation({ 
       x: position.x, 
       y: position.y, 
       z: position.z 
     }, true);
     
-    // Apply same rotation to physics body
-    const rot = playerMesh.quaternion;
-    playerBody.setRotation({
-      x: rot.x,
-      y: rot.y,
-      z: rot.z,
-      w: rot.w
-    }, true);
+    // Make sure quaternion values are valid numbers before applying
+    if (!isNaN(orientationQuaternion.x) && 
+        !isNaN(orientationQuaternion.y) && 
+        !isNaN(orientationQuaternion.z) && 
+        !isNaN(orientationQuaternion.w)) {
+      playerBody.setRotation({
+        x: orientationQuaternion.x,
+        y: orientationQuaternion.y,
+        z: orientationQuaternion.z,
+        w: orientationQuaternion.w
+      }, true);
+    }
   }
 }
 
@@ -278,16 +352,119 @@ function updatePlayer(deltaTime) {
     playerBody.translation().z
   );
   
-  // Calculate up vector (away from planet center)
-  const up = position.clone().sub(GRAVITY_CENTER).normalize();
+  // Calculate gravity direction (towards planet center)
+  const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
+  const up = gravityDir.clone().negate(); // Up is opposite of gravity
   
   // Apply gravity towards planet center
-  const gravity = up.clone().multiplyScalar(-GRAVITY_STRENGTH * deltaTime);
+  const gravity = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime);
   playerState.velocity.add(gravity);
   
-  // Get forward and right vectors relative to the planet surface
-  const right = new THREE.Vector3(1, 0, 0).cross(up).normalize();
-  const forward = up.clone().cross(right).normalize();
+  // Multiple raycasts for better ground detection and orientation
+  // Perform 5 raycasts - one at center and four around the feet perimeter
+  const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(PLAYER_HEIGHT/2 - PLAYER_RADIUS));
+  const rayDirections = [
+    gravityDir.clone(), // Center ray
+    gravityDir.clone(), // Forward ray
+    gravityDir.clone(), // Right ray
+    gravityDir.clone(), // Back ray
+    gravityDir.clone()  // Left ray
+  ];
+  
+  // Calculate offset positions for the perimeter rays
+  const forwardDir = new THREE.Vector3(1, 0, 0).cross(up).normalize();
+  const rightDir = up.clone().cross(forwardDir).normalize();
+  const rayPositions = [
+    feetPosition.clone(), // Center
+    feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)), // Forward
+    feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)),   // Right
+    feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)), // Back
+    feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8))    // Left
+  ];
+  
+  // Store hit normals and distance
+  const hitPoints = [];
+  const hitNormals = [];
+  let hitDistance = -1;
+  let onSurface = false;
+  
+  // Perform the raycasts
+  for (let i = 0; i < rayPositions.length; i++) {
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(rayPositions[i], rayDirections[i]);
+    const intersects = raycaster.intersectObject(terrain);
+    
+    if (intersects.length > 0) {
+      // Get normal and transform to world space
+      const normal = intersects[0].face.normal.clone();
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(terrain.matrixWorld);
+      normal.applyMatrix3(normalMatrix).normalize();
+      
+      hitNormals.push(normal);
+      hitPoints.push(intersects[0].point);
+      
+      // Store the center ray distance
+      if (i === 0) {
+        hitDistance = intersects[0].distance;
+        
+        // If center ray hit is close enough, we're on the ground
+        if (hitDistance < PLAYER_RADIUS + 0.2) {
+          onSurface = true;
+          playerState.onGround = true;
+          
+          // Prevent sinking
+          if (hitDistance < PLAYER_RADIUS) {
+            const pushUpAmount = PLAYER_RADIUS - hitDistance;
+            position.add(normal.clone().multiplyScalar(pushUpAmount));
+          }
+          
+          // Apply stronger friction when on ground
+          playerState.velocity.multiplyScalar(0.8);
+          
+          // Cancel velocity in normal direction to improve stability
+          const normalVelocity = playerState.velocity.clone().projectOnVector(normal);
+          playerState.velocity.sub(normalVelocity);
+        } else {
+          playerState.onGround = false;
+        }
+      }
+    }
+  }
+  
+  // Calculate average surface normal from all hits
+  let surfaceNormal = up.clone(); // Default to gravity-based up
+  if (hitNormals.length > 0) {
+    surfaceNormal = new THREE.Vector3();
+    for (const normal of hitNormals) {
+      surfaceNormal.add(normal);
+    }
+    surfaceNormal.divideScalar(hitNormals.length).normalize();
+  } else {
+    // No hits from any rays - check if inside planet
+    const distToCenter = position.distanceTo(GRAVITY_CENTER);
+    const minDistance = PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT/2;
+    
+    if (distToCenter < minDistance) {
+      // Too close to center - push player out to minimum distance
+      position.copy(up.clone().multiplyScalar(minDistance));
+      playerState.onGround = true;
+      playerState.velocity.projectOnPlane(up);
+    } else {
+      playerState.onGround = false;
+    }
+  }
+  
+  // Calculate movement direction based on current orientation
+  const orientationMatrix = new THREE.Matrix4().lookAt(
+    new THREE.Vector3(0, 0, 0),
+    surfaceNormal,
+    forwardDir
+  );
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
+  
+  // Calculate orientation-aligned movement vectors
+  let right = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);
+  let forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
   
   // Calculate movement direction
   playerState.direction.set(0, 0, 0);
@@ -303,7 +480,7 @@ function updatePlayer(deltaTime) {
   
   // Apply jump force
   if (playerState.jump && playerState.onGround) {
-    playerState.velocity.add(up.multiplyScalar(JUMP_FORCE));
+    playerState.velocity.add(surfaceNormal.clone().multiplyScalar(JUMP_FORCE));
     playerState.onGround = false;
     playerState.jump = false;
   }
@@ -311,47 +488,14 @@ function updatePlayer(deltaTime) {
   // Apply velocity to position
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
   
-  // Raycast to detect ground
-  const raycaster = new THREE.Raycaster();
-  raycaster.set(position, up.clone().negate());
-  const intersects = raycaster.intersectObject(terrain);
-  
-  if (intersects.length > 0) {
-    const distance = intersects[0].distance;
-    
-    // Check if on ground
-    if (distance < PLAYER_HEIGHT/2 + 0.2) {
-      playerState.onGround = true;
-      
-      // Align with surface and place on ground
-      const adjustedPosition = position.clone().add(
-        up.clone().multiplyScalar(PLAYER_HEIGHT/2 + 0.1 - distance)
-      );
-      position.copy(adjustedPosition);
-      
-      // Dampen velocity when on ground
-      playerState.velocity.projectOnPlane(up);
-      playerState.velocity.multiplyScalar(0.9); // Friction
-    } else {
-      playerState.onGround = false;
-    }
-  } else {
-    // No ground detected - ensure minimum distance from center
-    const distToCenter = position.distanceTo(GRAVITY_CENTER);
-    const minDistance = PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT/2;
-    
-    if (distToCenter < minDistance) {
-      // Too close to center - push player out to minimum distance
-      position.copy(up.clone().multiplyScalar(minDistance));
-      playerState.onGround = true;
-      playerState.velocity.projectOnPlane(up);
-    } else {
-      playerState.onGround = false;
-    }
-  }
-  
-  // Update player position
-  updatePlayerPosition(position);
+  // Update player position and align to surface
+  // Make sure we always pass all four parameters with valid values
+  updatePlayerPositionAndOrientation(
+    position, 
+    surfaceNormal || up.clone(), 
+    onSurface, 
+    up
+  );
 }
 
 // Animation loop
