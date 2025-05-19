@@ -46,7 +46,7 @@ const GRAVITY_STRENGTH = 9.8;
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 5;
-const JUMP_FORCE = 5;
+const JUMP_FORCE = 12; // Increased jump force from 5 to 12
 const PLANET_RADIUS = 50;
 const TERRAIN_DETAIL = 64; // Resolution of the sphere
 const TERRAIN_HEIGHT_SCALE = 5; // How much the terrain varies in height
@@ -289,6 +289,7 @@ function onKeyUp(event) {
     case 'KeyD': playerState.moveRight = false; break;
     case 'KeyQ': playerState.turnLeft = false; break;
     case 'KeyE': playerState.turnRight = false; break;
+    case 'Space': playerState.jump = false; break; // Add this to reset jump on key up
   }
 }
 
@@ -409,6 +410,22 @@ function updatePlayer(deltaTime) {
   const gravity = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime);
   playerState.velocity.add(gravity);
   
+  // Initialize onSurface variable
+  let onSurface = false;
+  
+  // Process jumping before ground detection
+  const wasJumping = playerState.jump && playerState.onGround;
+  
+  // Store initial ground state before ray casting
+  const wasOnGround = playerState.onGround;
+  
+  // If we're actively jumping this frame, force not on ground 
+  // to prevent immediate re-grounding
+  if (wasJumping) {
+    playerState.onGround = false;
+    // onSurface is already false by default, no need to set it again
+  }
+  
   // Get the capsule bottom position (feet)
   // Make sure to account for the entire capsule height (half height + radius)
   const capsuleBottomOffset = PLAYER_HEIGHT/2; // Distance from center to bottom of capsule
@@ -443,33 +460,35 @@ function updatePlayer(deltaTime) {
   const hitPoints = [];
   const hitNormals = [];
   let closestHitDistance = Infinity;
-  let onSurface = false;
   
-  // Perform the raycasts
-  for (let i = 0; i < rayPositions.length; i++) {
-    const raycaster = new THREE.Raycaster();
-    raycaster.set(rayPositions[i], rayDirections[i]);
-    const intersects = raycaster.intersectObject(terrain);
-    
-    if (intersects.length > 0) {
-      // Get normal and transform to world space
-      const normal = intersects[0].face.normal.clone();
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix(terrain.matrixWorld);
-      normal.applyMatrix3(normalMatrix).normalize();
+  // Skip ground detection entirely if we just jumped
+  if (!wasJumping) {
+    // Perform the raycasts
+    for (let i = 0; i < rayPositions.length; i++) {
+      const raycaster = new THREE.Raycaster();
+      raycaster.set(rayPositions[i], rayDirections[i]);
+      const intersects = raycaster.intersectObject(terrain);
       
-      // Store hit info
-      hitNormals.push(normal);
-      hitPoints.push(intersects[0].point);
-      
-      // Track the closest hit distance for precise positioning
-      if (intersects[0].distance < closestHitDistance) {
-        closestHitDistance = intersects[0].distance;
-      }
-      
-      // Check if center ray hit
-      if (i === 0 && intersects[0].distance < groundCheckDistance) {
-        onSurface = true;
-        playerState.onGround = true;
+      if (intersects.length > 0) {
+        // Get normal and transform to world space
+        const normal = intersects[0].face.normal.clone();
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(terrain.matrixWorld);
+        normal.applyMatrix3(normalMatrix).normalize();
+        
+        // Store hit info
+        hitNormals.push(normal);
+        hitPoints.push(intersects[0].point);
+        
+        // Track the closest hit distance for precise positioning
+        if (intersects[0].distance < closestHitDistance) {
+          closestHitDistance = intersects[0].distance;
+        }
+        
+        // Check if center ray hit
+        if (i === 0 && intersects[0].distance < groundCheckDistance) {
+          onSurface = true;
+          playerState.onGround = true;
+        }
       }
     }
   }
@@ -517,7 +536,7 @@ function updatePlayer(deltaTime) {
     }
   }
   
-  // Apply turning based on input
+  // Handle turning and movement direction calculations
   if (playerState.turnLeft) {
     // Rotate facing direction left around the up vector
     const upAxis = position.clone().sub(GRAVITY_CENTER).normalize();
@@ -562,22 +581,26 @@ function updatePlayer(deltaTime) {
   }
   
   // Modified jump logic to use player's orientation direction
-  if (playerState.jump && playerState.onGround) {
-    // Calculate jump direction based on player orientation and a bit of the up vector
+  if (wasJumping) {
+    console.log("Applying jump force!");
+    
+    // Calculate jump direction based on player orientation and surface normal
     const jumpDirection = new THREE.Vector3();
     
-    // Add a component in the player's facing direction
-    jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(0.8));
+    // Add a stronger component in the player's facing direction
+    jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(1.2));
     
-    // Add a component in the up direction (to give some height to the jump)
-    jumpDirection.add(surfaceNormal.clone().multiplyScalar(1.2));
+    // Add a stronger component in the up direction
+    jumpDirection.add(surfaceNormal.clone().multiplyScalar(2.0));
     
     // Normalize and apply the force
     jumpDirection.normalize().multiplyScalar(JUMP_FORCE);
     
+    // Apply an immediate position boost to break contact with ground
+    position.add(surfaceNormal.clone().multiplyScalar(0.2));
+    
     // Reset velocity and set the jump direction as the new velocity
-    // This ensures the jump isn't affected by previous velocity
-    playerState.velocity = jumpDirection;
+    playerState.velocity = jumpDirection.clone();
     
     // Set player to falling state
     playerState.onGround = false;
@@ -621,11 +644,10 @@ function updatePlayer(deltaTime) {
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
   
   // Update player position and align to surface
-  // Make sure we always pass all four parameters with valid values
   updatePlayerPositionAndOrientation(
     position, 
     surfaceNormal || up.clone(), 
-    onSurface, 
+    onSurface && !wasJumping, // Don't consider on surface if just jumped
     up
   );
 }
