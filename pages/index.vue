@@ -2,7 +2,7 @@
   <div class="container">
     <canvas ref="canvasRef"></canvas>
     <div class="controls-info">
-      <p>WASD: Move | SPACE: Jump | MOUSE: Look</p>
+      <p>WASD: Move | Q/E: Turn | SPACE: Jump</p>
     </div>
   </div>
 </template>
@@ -33,6 +33,11 @@ const playerState = {
   moveBackward: false,
   moveLeft: false,
   moveRight: false,
+  // Add current facing direction
+  facingDirection: new THREE.Vector3(0, 0, -1),
+  // Track rotation input for turning
+  turnLeft: false,
+  turnRight: false,
 };
 
 // Constants
@@ -45,6 +50,9 @@ const JUMP_FORCE = 5;
 const PLANET_RADIUS = 50;
 const TERRAIN_DETAIL = 64; // Resolution of the sphere
 const TERRAIN_HEIGHT_SCALE = 5; // How much the terrain varies in height
+const TURN_SPEED = 2; // How fast the player rotates
+// Adjust this to reduce the gap
+const GROUND_OFFSET = 0.01; // Very small offset from ground for stability
 
 // Generate spherical terrain vertices with height variations
 function generateSphericalTerrain() {
@@ -248,10 +256,40 @@ function initThree() {
   // Reset player velocity to ensure clean falling
   playerState.velocity.set(0, 0, 0);
   
-  // Add event listeners
+  // Add ALL event listeners - this was the source of the error
   window.addEventListener('resize', onWindowResize);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+}
+
+// Event handlers
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function onKeyDown(event) {
+  switch (event.code) {
+    case 'KeyW': playerState.moveForward = true; break;
+    case 'KeyS': playerState.moveBackward = true; break;
+    case 'KeyA': playerState.moveLeft = true; break;
+    case 'KeyD': playerState.moveRight = true; break;
+    case 'Space': playerState.jump = true; break;
+    case 'KeyQ': playerState.turnLeft = true; break;
+    case 'KeyE': playerState.turnRight = true; break;
+  }
+}
+
+function onKeyUp(event) {
+  switch (event.code) {
+    case 'KeyW': playerState.moveForward = false; break;
+    case 'KeyS': playerState.moveBackward = false; break;
+    case 'KeyA': playerState.moveLeft = false; break;
+    case 'KeyD': playerState.moveRight = false; break;
+    case 'KeyQ': playerState.turnLeft = false; break;
+    case 'KeyE': playerState.turnRight = false; break;
+  }
 }
 
 // Update player position and orientation based on surface normal and gravity
@@ -280,26 +318,35 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
       .addScaledVector(gravityUp, 1.0) 
       .addScaledVector(surfaceNormal, blendFactor * 2)
       .normalize();
+
+    // Store the current facing direction in world space before rotation
+    // This is important to maintain the player's facing direction when rotating with the surface
+    const worldFacingDir = playerState.facingDirection.clone();
     
-    // Find a stable forward direction
+    // Create basis vectors for the new orientation
+    // First, calculate right vector perpendicular to up and world-up for stability
     const worldUp = new THREE.Vector3(0, 1, 0);
     let right = new THREE.Vector3().crossVectors(worldUp, blendedUp);
     
-    // If right is too small, use a different reference direction
     if (right.lengthSq() < 0.01) {
       right = new THREE.Vector3(1, 0, 0);
     }
-    
     right.normalize();
     
     // Calculate forward from right and up
-    const forward = new THREE.Vector3().crossVectors(right, blendedUp).normalize();
+    let forward = new THREE.Vector3().crossVectors(right, blendedUp).normalize();
     
     // Create the orientation matrix
     const orientationMatrix = new THREE.Matrix4().makeBasis(right, blendedUp, forward);
     orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
+    
+    // Project the player's facing direction onto the surface plane
+    // This ensures the facing direction stays tangent to the surface
+    playerState.facingDirection = worldFacingDir.clone()
+      .projectOnPlane(blendedUp)
+      .normalize();
   } else {
-    // When in air, align with gravity
+    // When in air, calculate orientation based on gravity direction
     const worldUp = new THREE.Vector3(0, 1, 0);
     let right = new THREE.Vector3().crossVectors(worldUp, gravityUp);
     
@@ -316,10 +363,12 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
   }
   
   // Apply the orientation to the capsule
+  playerMesh.position.copy(position);
   playerMesh.quaternion.copy(orientationQuaternion);
   
   // Update physics body - only if it exists and orientation is valid
   if (physicsInitialized && playerBody && orientationQuaternion) {
+    // Ensure visual and physics representations match exactly
     playerBody.setTranslation({ 
       x: position.x, 
       y: position.y, 
@@ -360,9 +409,17 @@ function updatePlayer(deltaTime) {
   const gravity = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime);
   playerState.velocity.add(gravity);
   
+  // Get the capsule bottom position (feet)
+  // Make sure to account for the entire capsule height (half height + radius)
+  const capsuleBottomOffset = PLAYER_HEIGHT/2; // Distance from center to bottom of capsule
+  const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(capsuleBottomOffset));
+  
+  // Accurate ground positioning
+  // The perfect distance should be very small to eliminate the gap
+  const perfectGroundDistance = GROUND_OFFSET;
+  const groundCheckDistance = PLAYER_RADIUS + 0.3; // Larger tolerance for considering on ground
+  
   // Multiple raycasts for better ground detection and orientation
-  // Perform 5 raycasts - one at center and four around the feet perimeter
-  const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(PLAYER_HEIGHT/2 - PLAYER_RADIUS));
   const rayDirections = [
     gravityDir.clone(), // Center ray
     gravityDir.clone(), // Forward ray
@@ -376,16 +433,16 @@ function updatePlayer(deltaTime) {
   const rightDir = up.clone().cross(forwardDir).normalize();
   const rayPositions = [
     feetPosition.clone(), // Center
-    feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)), // Forward
-    feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)),   // Right
-    feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8)), // Back
-    feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.8))    // Left
+    feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward
+    feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),   // Right
+    feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Back
+    feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7))    // Left
   ];
   
   // Store hit normals and distance
   const hitPoints = [];
   const hitNormals = [];
-  let hitDistance = -1;
+  let closestHitDistance = Infinity;
   let onSurface = false;
   
   // Perform the raycasts
@@ -400,33 +457,19 @@ function updatePlayer(deltaTime) {
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(terrain.matrixWorld);
       normal.applyMatrix3(normalMatrix).normalize();
       
+      // Store hit info
       hitNormals.push(normal);
       hitPoints.push(intersects[0].point);
       
-      // Store the center ray distance
-      if (i === 0) {
-        hitDistance = intersects[0].distance;
-        
-        // If center ray hit is close enough, we're on the ground
-        if (hitDistance < PLAYER_RADIUS + 0.2) {
-          onSurface = true;
-          playerState.onGround = true;
-          
-          // Prevent sinking
-          if (hitDistance < PLAYER_RADIUS) {
-            const pushUpAmount = PLAYER_RADIUS - hitDistance;
-            position.add(normal.clone().multiplyScalar(pushUpAmount));
-          }
-          
-          // Apply stronger friction when on ground
-          playerState.velocity.multiplyScalar(0.8);
-          
-          // Cancel velocity in normal direction to improve stability
-          const normalVelocity = playerState.velocity.clone().projectOnVector(normal);
-          playerState.velocity.sub(normalVelocity);
-        } else {
-          playerState.onGround = false;
-        }
+      // Track the closest hit distance for precise positioning
+      if (intersects[0].distance < closestHitDistance) {
+        closestHitDistance = intersects[0].distance;
+      }
+      
+      // Check if center ray hit
+      if (i === 0 && intersects[0].distance < groundCheckDistance) {
+        onSurface = true;
+        playerState.onGround = true;
       }
     }
   }
@@ -439,6 +482,26 @@ function updatePlayer(deltaTime) {
       surfaceNormal.add(normal);
     }
     surfaceNormal.divideScalar(hitNormals.length).normalize();
+    
+    // If we have any hits, position player precisely above the ground
+    if (closestHitDistance < groundCheckDistance) {
+      onSurface = true;
+      playerState.onGround = true;
+      
+      // Calculate the distance from the bottom of the capsule to the ground
+      // This gives us the exact placement needed with minimal gap
+      const adjustmentNeeded = perfectGroundDistance - closestHitDistance;
+      
+      // Apply a stronger position correction to eliminate the gap
+      // Don't use the tolerance here to ensure precise positioning
+      position.add(surfaceNormal.clone().multiplyScalar(adjustmentNeeded + PLAYER_RADIUS));
+      
+      // Cancel velocity along surface normal
+      const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
+      playerState.velocity.sub(normalVelocity);
+    } else {
+      playerState.onGround = false;
+    }
   } else {
     // No hits from any rays - check if inside planet
     const distToCenter = position.distanceTo(GRAVITY_CENTER);
@@ -454,35 +517,104 @@ function updatePlayer(deltaTime) {
     }
   }
   
-  // Calculate movement direction based on current orientation
-  const orientationMatrix = new THREE.Matrix4().lookAt(
-    new THREE.Vector3(0, 0, 0),
-    surfaceNormal,
-    forwardDir
-  );
-  const quaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
+  // Apply turning based on input
+  if (playerState.turnLeft) {
+    // Rotate facing direction left around the up vector
+    const upAxis = position.clone().sub(GRAVITY_CENTER).normalize();
+    const rotationMatrix = new THREE.Matrix4().makeRotationAxis(upAxis, TURN_SPEED * deltaTime);
+    playerState.facingDirection.applyMatrix4(rotationMatrix);
+  }
+  if (playerState.turnRight) {
+    // Rotate facing direction right around the up vector
+    const upAxis = position.clone().sub(GRAVITY_CENTER).normalize();
+    const rotationMatrix = new THREE.Matrix4().makeRotationAxis(upAxis, -TURN_SPEED * deltaTime);
+    playerState.facingDirection.applyMatrix4(rotationMatrix);
+  }
   
-  // Calculate orientation-aligned movement vectors
-  let right = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);
-  let forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
+  // Ensure facing direction is normalized
+  playerState.facingDirection.normalize();
   
-  // Calculate movement direction
+  // Get the surface-aligned facing direction
+  const surfaceAlignedFacing = playerState.facingDirection.clone()
+    .projectOnPlane(surfaceNormal)
+    .normalize();
+  
+  // Calculate the right vector perpendicular to facing and surface normal
+  const right = new THREE.Vector3()
+    .crossVectors(surfaceNormal, surfaceAlignedFacing)
+    .normalize();
+  
+  // Calculate movement direction based on player's facing direction
   playerState.direction.set(0, 0, 0);
-  if (playerState.moveForward) playerState.direction.add(forward);
-  if (playerState.moveBackward) playerState.direction.sub(forward);
+  if (playerState.moveForward) playerState.direction.add(surfaceAlignedFacing);
+  if (playerState.moveBackward) playerState.direction.sub(surfaceAlignedFacing);
   if (playerState.moveRight) playerState.direction.add(right);
   if (playerState.moveLeft) playerState.direction.sub(right);
   
+  // Calculate if player is actively moving (WASD keys pressed)
+  const isMoving = playerState.moveForward || playerState.moveBackward || 
+                   playerState.moveLeft || playerState.moveRight;
+  
+  // Apply movement if player is actively trying to move
   if (playerState.direction.lengthSq() > 0) {
     playerState.direction.normalize().multiplyScalar(MOVE_SPEED * deltaTime);
     position.add(playerState.direction);
   }
   
-  // Apply jump force
+  // Modified jump logic to use player's orientation direction
   if (playerState.jump && playerState.onGround) {
-    playerState.velocity.add(surfaceNormal.clone().multiplyScalar(JUMP_FORCE));
+    // Calculate jump direction based on player orientation and a bit of the up vector
+    const jumpDirection = new THREE.Vector3();
+    
+    // Add a component in the player's facing direction
+    jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(0.8));
+    
+    // Add a component in the up direction (to give some height to the jump)
+    jumpDirection.add(surfaceNormal.clone().multiplyScalar(1.2));
+    
+    // Normalize and apply the force
+    jumpDirection.normalize().multiplyScalar(JUMP_FORCE);
+    
+    // Reset velocity and set the jump direction as the new velocity
+    // This ensures the jump isn't affected by previous velocity
+    playerState.velocity = jumpDirection;
+    
+    // Set player to falling state
     playerState.onGround = false;
     playerState.jump = false;
+  }
+  
+  // Special handling for when player is on ground but not moving
+  if (playerState.onGround) {
+    if (!isMoving) {
+      // Stronger friction when not moving (prevents sliding)
+      playerState.velocity.multiplyScalar(0.2); // Much stronger friction when standing still
+      
+      // Cancel very small velocities (prevents persistent micro-sliding)
+      if (playerState.velocity.lengthSq() < 0.01) {
+        playerState.velocity.set(0, 0, 0);
+      }
+      
+      // For slopes: Apply a counter-force to neutralize sliding due to gravity
+      // Calculate the parallel component of gravity to the surface
+      const gravityOnSlope = gravity.clone().projectOnPlane(surfaceNormal);
+      
+      // Only apply if the slope isn't too steep
+      const slopeAngle = Math.acos(Math.min(1, surfaceNormal.dot(up)));
+      const maxStickSlope = Math.PI / 6; // 30 degrees
+      
+      if (slopeAngle < maxStickSlope) {
+        // Apply counter-force to resist sliding
+        playerState.velocity.sub(gravityOnSlope);
+      }
+    } else {
+      // Normal friction when moving
+      playerState.velocity.multiplyScalar(0.8);
+    }
+    
+    // For all ground cases, project velocity onto the surface plane
+    // This keeps player sliding along the surface
+    playerState.velocity = playerState.velocity.projectOnPlane(surfaceNormal);
   }
   
   // Apply velocity to position
@@ -512,32 +644,6 @@ function animate() {
   renderer.render(scene, camera);
   
   requestAnimationFrame(animate);
-}
-
-// Event handlers
-function onWindowResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-function onKeyDown(event) {
-  switch (event.code) {
-    case 'KeyW': playerState.moveForward = true; break;
-    case 'KeyS': playerState.moveBackward = true; break;
-    case 'KeyA': playerState.moveLeft = true; break;
-    case 'KeyD': playerState.moveRight = true; break;
-    case 'Space': playerState.jump = true; break;
-  }
-}
-
-function onKeyUp(event) {
-  switch (event.code) {
-    case 'KeyW': playerState.moveForward = false; break;
-    case 'KeyS': playerState.moveBackward = false; break;
-    case 'KeyA': playerState.moveLeft = false; break;
-    case 'KeyD': playerState.moveRight = false; break;
-  }
 }
 
 // Lifecycle hooks
