@@ -402,18 +402,14 @@ function updatePlayer(deltaTime) {
   const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
   const up = gravityDir.clone().negate(); // Up is opposite of gravity
   
-  // Apply gravity towards planet center
-  const gravity = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime);
-  playerState.velocity.add(gravity);
+  // Store initial ground state before ray casting
+  const wasOnGround = playerState.onGround;
   
   // Initialize onSurface variable
   let onSurface = false;
   
   // Process jumping before ground detection
   const wasJumping = playerState.jump && playerState.onGround;
-  
-  // Store initial ground state before ray casting
-  const wasOnGround = playerState.onGround;
   
   // If we're actively jumping this frame, force not on ground 
   // to prevent immediate re-grounding
@@ -422,8 +418,7 @@ function updatePlayer(deltaTime) {
     // onSurface is already false by default, no need to set it again
   }
   
-  // Get the exact capsule bottom position (feet) with even more precise calculation
-  // Start the raycast from slightly inside the capsule to better detect the ground
+  // Get the exact capsule bottom position (feet)
   const capsuleBottomOffset = PLAYER_HEIGHT/2; 
   const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.05));
   
@@ -502,6 +497,7 @@ function updatePlayer(deltaTime) {
       onSurface = true;
       playerState.onGround = true;
       
+      // Position adjustment logic
       // Calculate where feet should be relative to the hit point
       const feetTargetHeight = PLAYER_RADIUS - TERRAIN_SINK;
       
@@ -537,6 +533,13 @@ function updatePlayer(deltaTime) {
     } else {
       playerState.onGround = false;
     }
+  }
+  
+  // Only apply gravity if the player is not on the ground
+  // This is the key change to prevent sliding after movement
+  if (!playerState.onGround) {
+    const gravity = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime);
+    playerState.velocity.add(gravity);
   }
   
   // Handle turning and movement direction calculations
@@ -577,7 +580,7 @@ function updatePlayer(deltaTime) {
   const isMoving = playerState.moveForward || playerState.moveBackward || 
                    playerState.moveLeft || playerState.moveRight;
   
-  // Apply movement if player is actively trying to move, with slope limitations
+  // Apply movement if player is actively trying to move
   if (playerState.direction.lengthSq() > 0) {
     // Calculate slope angle between movement direction and gravity up vector
     const slopeAngle = Math.acos(Math.min(1, Math.abs(surfaceNormal.dot(up))));
@@ -611,7 +614,7 @@ function updatePlayer(deltaTime) {
     position.add(playerState.direction);
   }
   
-  // Modified jump logic for stronger jump
+  // Jump logic
   if (wasJumping) {
     console.log("Applying jump force!");
     
@@ -638,44 +641,32 @@ function updatePlayer(deltaTime) {
     playerState.jump = false;
   }
   
-  // Special handling for when player is on ground but not moving
+  // Special handling for when player is on ground
   if (playerState.onGround) {
     if (!isMoving) {
-      // Stronger friction when not moving (prevents sliding)
-      playerState.velocity.multiplyScalar(0.2); // Much stronger friction when standing still
+      // Apply stronger stopping force when player is not actively moving
+      // This prevents sliding after movement stops
+      playerState.velocity.multiplyScalar(0.05); // Much stronger friction when standing still
       
-      // Cancel very small velocities (prevents persistent micro-sliding)
-      if (playerState.velocity.lengthSq() < 0.01) {
+      // Cancel very small velocities completely (prevents any micro-sliding)
+      if (playerState.velocity.lengthSq() < 0.03) { // Higher threshold to catch more small movements
         playerState.velocity.set(0, 0, 0);
       }
       
-      // For slopes: Apply a counter-force to neutralize sliding due to gravity
-      // Calculate the parallel component of gravity to the surface
-      const gravityOnSlope = gravity.clone().projectOnPlane(surfaceNormal);
-      
-      // Only apply if the slope isn't too steep
-      const slopeAngle = Math.acos(Math.min(1, surfaceNormal.dot(up)));
-      const maxStickSlope = Math.PI / 6; // 30 degrees
-      
-      if (slopeAngle < maxStickSlope) {
-        // Apply counter-force to resist sliding
-        playerState.velocity.sub(gravityOnSlope);
-      }
+      // Don't need counter-force for gravity on slopes since we're not applying gravity
     } else {
-      // Normal friction when moving
+      // Still apply normal friction when moving to prevent excessive speed buildup
       playerState.velocity.multiplyScalar(0.8);
     }
     
-    // For all ground cases, project velocity onto the surface plane
-    // This keeps player sliding along the surface
+    // For all ground cases, ensure velocity stays along the surface
     playerState.velocity = playerState.velocity.projectOnPlane(surfaceNormal);
   }
   
   // Apply velocity to position
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
   
-  // Update player position and align to surface
-  // But don't force realignment if we just moved off a steep slope
+  // Update player position and orientation
   updatePlayerPositionAndOrientation(
     position, 
     surfaceNormal || up.clone(), 
