@@ -46,13 +46,19 @@ const GRAVITY_STRENGTH = 9.8;
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 5;
-const JUMP_FORCE = 12; // Increased jump force from 5 to 12
+const JUMP_FORCE = 18; // Increased jump force from 12 to 18 for a much stronger jump
 const PLANET_RADIUS = 50;
 const TERRAIN_DETAIL = 64; // Resolution of the sphere
-const TERRAIN_HEIGHT_SCALE = 5; // How much the terrain varies in height
+const TERRAIN_HEIGHT_SCALE = 50; // How much the terrain varies in height
 const TURN_SPEED = 2; // How fast the player rotates
 // Adjust this to reduce the gap
-const GROUND_OFFSET = 0.01; // Very small offset from ground for stability
+const GROUND_OFFSET = 0; // Make GROUND_OFFSET exactly zero to completely eliminate the gap
+// Add a small "sink" value to push player slightly into the terrain (visually imperceptible)
+const TERRAIN_SINK = 0.02; // This makes the capsule sink slightly into the terrain to eliminate any gap
+const ORIENTATION_SMOOTHING = 0.9; // Higher value = smoother but slower orientation changes
+const MAX_SLOPE_CLIMB_ANGLE = Math.PI / 4; // Maximum slope the player can climb (45 degrees)
+// Add slope constants for movement limitations but not visual orientation
+const MAX_CLIMBABLE_SLOPE = Math.PI / 5; // Maximum slope angle the player can climb (36 degrees)
 
 // Generate spherical terrain vertices with height variations
 function generateSphericalTerrain() {
@@ -299,7 +305,6 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
   if (!position) return;
   if (!surfaceNormal) surfaceNormal = new THREE.Vector3(0, 1, 0);
   if (!gravityUp) {
-    // If no gravity up is provided, calculate from position
     gravityUp = position.clone().sub(GRAVITY_CENTER).normalize();
   }
   
@@ -309,23 +314,15 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
   // Create a quaternion for orientation
   let orientationQuaternion;
   
+  // Store old facing direction
+  const oldFacingDir = playerState.facingDirection.clone();
+  
   if (onSurface) {
-    // Create a weighted blend between gravity up and surface normal
-    const angle = Math.acos(THREE.MathUtils.clamp(gravityUp.dot(surfaceNormal), -1, 1));
-    const maxSlopeAngle = Math.PI / 4; // 45 degrees
-    const blendFactor = Math.min(angle / maxSlopeAngle, 1.0);
+    // Allow full alignment with any surface normal without capping the angle
+    // This lets the player visually orient to any surface
+    const blendedUp = surfaceNormal.clone();
     
-    const blendedUp = new THREE.Vector3()
-      .addScaledVector(gravityUp, 1.0) 
-      .addScaledVector(surfaceNormal, blendFactor * 2)
-      .normalize();
-
-    // Store the current facing direction in world space before rotation
-    // This is important to maintain the player's facing direction when rotating with the surface
-    const worldFacingDir = playerState.facingDirection.clone();
-    
-    // Create basis vectors for the new orientation
-    // First, calculate right vector perpendicular to up and world-up for stability
+    // Find a stable forward direction
     const worldUp = new THREE.Vector3(0, 1, 0);
     let right = new THREE.Vector3().crossVectors(worldUp, blendedUp);
     
@@ -341,9 +338,8 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
     const orientationMatrix = new THREE.Matrix4().makeBasis(right, blendedUp, forward);
     orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
     
-    // Project the player's facing direction onto the surface plane
-    // This ensures the facing direction stays tangent to the surface
-    playerState.facingDirection = worldFacingDir.clone()
+    // Update player facing direction to maintain direction on surface
+    playerState.facingDirection = oldFacingDir.clone()
       .projectOnPlane(blendedUp)
       .normalize();
   } else {
@@ -426,15 +422,14 @@ function updatePlayer(deltaTime) {
     // onSurface is already false by default, no need to set it again
   }
   
-  // Get the capsule bottom position (feet)
-  // Make sure to account for the entire capsule height (half height + radius)
-  const capsuleBottomOffset = PLAYER_HEIGHT/2; // Distance from center to bottom of capsule
-  const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(capsuleBottomOffset));
+  // Get the exact capsule bottom position (feet) with even more precise calculation
+  // Start the raycast from slightly inside the capsule to better detect the ground
+  const capsuleBottomOffset = PLAYER_HEIGHT/2; 
+  const feetPosition = position.clone().add(gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.05));
   
-  // Accurate ground positioning
-  // The perfect distance should be very small to eliminate the gap
-  const perfectGroundDistance = GROUND_OFFSET;
-  const groundCheckDistance = PLAYER_RADIUS + 0.3; // Larger tolerance for considering on ground
+  // Use more aggressive ground detection with zero tolerance
+  const perfectGroundDistance = 0; // Exact contact
+  const groundCheckDistance = PLAYER_RADIUS + 0.5; // Larger search distance but exact positioning
   
   // Multiple raycasts for better ground detection and orientation
   const rayDirections = [
@@ -494,7 +489,7 @@ function updatePlayer(deltaTime) {
   }
   
   // Calculate average surface normal from all hits
-  let surfaceNormal = up.clone(); // Default to gravity-based up
+  let surfaceNormal = up.clone(); 
   if (hitNormals.length > 0) {
     surfaceNormal = new THREE.Vector3();
     for (const normal of hitNormals) {
@@ -507,17 +502,25 @@ function updatePlayer(deltaTime) {
       onSurface = true;
       playerState.onGround = true;
       
-      // Calculate the distance from the bottom of the capsule to the ground
-      // This gives us the exact placement needed with minimal gap
-      const adjustmentNeeded = perfectGroundDistance - closestHitDistance;
+      // Calculate where feet should be relative to the hit point
+      const feetTargetHeight = PLAYER_RADIUS - TERRAIN_SINK;
       
-      // Apply a stronger position correction to eliminate the gap
-      // Don't use the tolerance here to ensure precise positioning
-      position.add(surfaceNormal.clone().multiplyScalar(adjustmentNeeded + PLAYER_RADIUS));
+      // Instead of directly setting position, move it gradually towards the correct height
+      // This avoids abrupt repositioning that can cause sticking
+      if (closestHitDistance < feetTargetHeight) {
+        // Only adjust position if we're too close to or penetrating the ground
+        const penetrationDepth = feetTargetHeight - closestHitDistance;
+        
+        // Apply a partial correction - don't snap fully to the target position
+        const correctionFactor = 0.4; // Lower = more gradual correction
+        position.add(surfaceNormal.clone().multiplyScalar(penetrationDepth * correctionFactor));
+      }
       
-      // Cancel velocity along surface normal
+      // Cancel velocity going into the ground, but preserve parallel motion
       const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
-      playerState.velocity.sub(normalVelocity);
+      if (normalVelocity.dot(surfaceNormal) < 0) {
+        playerState.velocity.sub(normalVelocity);
+      }
     } else {
       playerState.onGround = false;
     }
@@ -574,30 +577,58 @@ function updatePlayer(deltaTime) {
   const isMoving = playerState.moveForward || playerState.moveBackward || 
                    playerState.moveLeft || playerState.moveRight;
   
-  // Apply movement if player is actively trying to move
+  // Apply movement if player is actively trying to move, with slope limitations
   if (playerState.direction.lengthSq() > 0) {
-    playerState.direction.normalize().multiplyScalar(MOVE_SPEED * deltaTime);
+    // Calculate slope angle between movement direction and gravity up vector
+    const slopeAngle = Math.acos(Math.min(1, Math.abs(surfaceNormal.dot(up))));
+    
+    // Only allow full movement speed on slopes that aren't too steep
+    let moveSpeedMultiplier = 1.0;
+    
+    // If slope is too steep, limit or prevent movement in uphill directions
+    if (slopeAngle > MAX_CLIMBABLE_SLOPE && playerState.onGround) {
+      // Calculate the horizontal component (relative to gravity) of the movement direction
+      const upComponent = playerState.direction.dot(surfaceNormal);
+      
+      // If trying to move uphill on a steep slope
+      if (upComponent > 0) {
+        // Calculate how much steeper than the limit the slope is (0-1 range)
+        const steepnessFactor = (slopeAngle - MAX_CLIMBABLE_SLOPE) / 
+                              (Math.PI/2 - MAX_CLIMBABLE_SLOPE);
+        
+        // Gradually reduce movement speed as slope gets steeper
+        moveSpeedMultiplier = Math.max(0, 1 - steepnessFactor * 1.5);
+        
+        // If completely vertical or beyond, prevent uphill movement entirely
+        if (slopeAngle >= Math.PI/2) {
+          moveSpeedMultiplier = 0;
+        }
+      }
+    }
+    
+    // Apply movement with the slope limitation
+    playerState.direction.normalize().multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
     position.add(playerState.direction);
   }
   
-  // Modified jump logic to use player's orientation direction
+  // Modified jump logic for stronger jump
   if (wasJumping) {
     console.log("Applying jump force!");
     
-    // Calculate jump direction based on player orientation and surface normal
+    // Calculate jump direction with stronger up component
     const jumpDirection = new THREE.Vector3();
     
-    // Add a stronger component in the player's facing direction
-    jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(1.2));
+    // Slightly stronger forward component (1.5 instead of 1.2)
+    jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(1.5));
     
-    // Add a stronger component in the up direction
-    jumpDirection.add(surfaceNormal.clone().multiplyScalar(2.0));
+    // Much stronger up component (3.0 instead of 2.0)
+    jumpDirection.add(surfaceNormal.clone().multiplyScalar(3.0));
     
     // Normalize and apply the force
     jumpDirection.normalize().multiplyScalar(JUMP_FORCE);
     
-    // Apply an immediate position boost to break contact with ground
-    position.add(surfaceNormal.clone().multiplyScalar(0.2));
+    // Apply a larger immediate position boost to break contact with ground
+    position.add(surfaceNormal.clone().multiplyScalar(0.3));
     
     // Reset velocity and set the jump direction as the new velocity
     playerState.velocity = jumpDirection.clone();
@@ -644,10 +675,11 @@ function updatePlayer(deltaTime) {
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
   
   // Update player position and align to surface
+  // But don't force realignment if we just moved off a steep slope
   updatePlayerPositionAndOrientation(
     position, 
     surfaceNormal || up.clone(), 
-    onSurface && !wasJumping, // Don't consider on surface if just jumped
+    onSurface && !wasJumping, 
     up
   );
 }
@@ -660,12 +692,33 @@ function animate() {
     // Update physics
     updatePlayer(deltaTime);
     world.step();
+    
+    // Uncomment to add debug visualization
+    // const position = new THREE.Vector3(playerBody.translation().x, playerBody.translation().y, playerBody.translation().z);
+    // debugDrawGroundContact(position, up);
   }
   
   // Render scene
   renderer.render(scene, camera);
   
   requestAnimationFrame(animate);
+}
+
+// After updating player and physics, add a small debug function to visualize the contact point
+// This can help identify any remaining gaps (can be removed in production)
+function debugDrawGroundContact(position, surfaceNormal) {
+  if (!playerState.onGround) return;
+  
+  // Calculate the exact bottom point of the capsule
+  const up = position.clone().sub(GRAVITY_CENTER).normalize();
+  const bottomPosition = position.clone().add(up.clone().negate().multiplyScalar(PLAYER_HEIGHT/2 - PLAYER_RADIUS));
+  
+  // Project slightly down to where ground should be
+  const groundPosition = bottomPosition.clone().add(up.clone().negate().multiplyScalar(PLAYER_RADIUS + GROUND_OFFSET));
+  
+  // Draw a debug point (you would need to implement this with a small sphere or marker)
+  // This is just a pseudo-code example
+  // drawDebugPoint(groundPosition, 0xff0000); // Red marker at exact ground contact point
 }
 
 // Lifecycle hooks
