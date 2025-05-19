@@ -36,6 +36,13 @@
     let collisionNormalArrow = null;
     let eventQueue;
     let terrain = null;
+    
+    // New vars for performance control
+    let showDebugNormals = false; // Set to false to improve performance
+    let lastTime = 0;
+    let frameCounter = 0;
+    let frameTime = 0;
+    let fps = 0;
 
     const keys = { w: false, a: false, s: false, d: false, space: false };
     
@@ -59,14 +66,14 @@
       scene.background = new THREE.Color(0x050510);
       
       camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-      camera.position.set(0, 20, 30);
+      camera.position.set(0, PLANET_RADIUS + 30, 30);
       
       renderer = new THREE.WebGLRenderer({ 
         canvas: canvas.value,
         antialias: true 
       });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Limit pixel ratio for performance
       
       controls = new OrbitControls(camera, canvas.value);
       controls.enableDamping = true;
@@ -83,8 +90,10 @@
       hemiLight.position.set(0, 50, 0);
       scene.add(hemiLight);
       
-      // Physics setup - no global gravity
+      // Physics setup - create with more precise solver
       physicsWorld = new RAPIER.World({ x: 0.0, y: 0.0, z: 0.0 });
+      physicsWorld.maxVelocityIterations = 8; // Increase solver iterations
+      physicsWorld.maxPositionIterations = 4;
       eventQueue = new RAPIER.EventQueue(true);
       
       // Create terrain first
@@ -229,13 +238,15 @@
       
       // Use a more efficient collision approach: convex hull pieces
       // Divide the sphere into sections to better approximate the terrain
-      const segments = 12; // Number of sections to divide the sphere into
+      const segments = 8; // Reduced from 12 for better performance
       
       // Create triangulation of sphere for collision
       createSphereColliders(terrainMesh, terrainBody, segments);
       
-      // Create normals visualization for terrain
-      addTerrainNormals(terrainMesh, positions);
+      // Only add terrain normals in debug mode
+      if (showDebugNormals) {
+        addTerrainNormals(terrainMesh, positions);
+      }
       
       // Store terrain object
       terrain = {
@@ -296,25 +307,41 @@
             
             if (colliderDesc) {
               colliderDesc.setFriction(0.8);
+              // Remove problematic methods that don't exist in this Rapier version
+              try {
+                // Try to set active events, but don't error if the method doesn't exist
+                if (typeof colliderDesc.setActiveEvents === 'function') {
+                  colliderDesc.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+                }
+                // Don't try to use setMargin as it doesn't exist
+              } catch (e) {
+                console.log("Some collision features not available in this Rapier version");
+              }
               physicsWorld.createCollider(colliderDesc, terrainBody);
-              
-              // Optionally visualize the convex hull for debugging
-              /*
-              const hull = new THREE.Mesh(
-                new THREE.ConvexGeometry(sectorVertices.map(v => new THREE.Vector3(v.x, v.y, v.z))),
-                new THREE.MeshBasicMaterial({ 
-                  color: 0xff0000, 
-                  wireframe: true, 
-                  transparent: true, 
-                  opacity: 0.2 
-                })
-              );
-              scene.add(hull);
-              */
             }
           }
         }
       }
+      
+      // Add additional safety collider at planet radius - this should help prevent falling through
+      const safetyColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS - 0.5);
+      safetyColliderDesc.setFriction(0.8);
+      physicsWorld.createCollider(safetyColliderDesc, terrainBody);
+      
+      // Add a second, slightly smaller safety collider for extra protection
+      const innerSafetyColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS - 1.0);
+      innerSafetyColliderDesc.setFriction(0.8);
+      physicsWorld.createCollider(innerSafetyColliderDesc, terrainBody);
+      
+      // Add a third, even smaller safety collider to create layered protection
+      const coreColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS - 2.0);
+      coreColliderDesc.setFriction(0.8);
+      physicsWorld.createCollider(coreColliderDesc, terrainBody);
+      
+      // Add a slightly larger collider to prevent tunneling at high speeds
+      const outerColliderDesc = RAPIER.ColliderDesc.ball(PLANET_RADIUS + 0.1);
+      outerColliderDesc.setFriction(0.2); // Lower friction for the outer shell
+      physicsWorld.createCollider(outerColliderDesc, terrainBody);
     }
     
     function addTerrainNormals(terrainMesh, positions) {
@@ -395,25 +422,39 @@
     }
 
     function createPlayer() {
-      // Spawn player further above terrain for a more visible fall
-      const spawnDistance = PLANET_RADIUS + 10; // Increased from 5 to 10 for more dramatic fall
+      // Spawn player much higher above terrain for better visibility
+      const spawnDistance = PLANET_RADIUS + 20;
       
-      // Choose a specific spawn direction for predictable testing
-      const phi = Math.PI * 0.25; // 45 degrees from pole
-      const theta = 0; // Along x-axis
+      // Position directly above positive Y axis for easy visibility
+      const phi = 0; // Place at north pole (straight up on Y-axis)
+      const theta = 0; // Angle doesn't matter at poles
       
       // Convert to Cartesian coordinates
-      const spawnX = spawnDistance * Math.sin(phi) * Math.cos(theta);
-      const spawnY = spawnDistance * Math.cos(phi);
-      const spawnZ = spawnDistance * Math.sin(phi) * Math.sin(theta);
+      const spawnX = 0; 
+      const spawnY = spawnDistance;
+      const spawnZ = 0;
       
-      // Use kinematic body
-      const playerRigidBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+      console.log(`Spawning player at: (${spawnX}, ${spawnY}, ${spawnZ})`);
+      
+      // Add a visual marker at spawn point for debugging
+      const markerGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+      const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff, wireframe: true });
+      const spawnMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+      spawnMarker.position.set(spawnX, spawnY, spawnZ);
+      scene.add(spawnMarker);
+      
+      // Use dynamic body instead of kinematic for better physics interaction
+      const playerRigidBodyDesc = RAPIER.RigidBodyDesc.dynamic();
       playerRigidBodyDesc.setTranslation(spawnX, spawnY, spawnZ);
+      
+      // Add additional physics properties for stability
+      playerRigidBodyDesc.lockRotations(); // Prevent tipping
+      playerRigidBodyDesc.setLinearDamping(0.5); // Add damping to prevent bouncing
+      playerRigidBodyDesc.setCcdEnabled(true); // Enable continuous collision detection if available
       
       const playerBody = physicsWorld.createRigidBody(playerRigidBodyDesc);
       
-      // Align player with surface
+      // Align player with surface - looking outward from planet center
       const upDirection = new THREE.Vector3(spawnX, spawnY, spawnZ).normalize();
       const worldUp = new THREE.Vector3(0, 1, 0);
       const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, upDirection);
@@ -425,13 +466,18 @@
         w: alignmentQuat.w
       });
       
-      const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2, PLAYER_RADIUS);
+      // Create slightly larger collider than visual model to prevent slipping through gaps
+      const playerColliderDesc = RAPIER.ColliderDesc.capsule(PLAYER_HEIGHT / 2 + 0.05, PLAYER_RADIUS + 0.05);
       playerColliderDesc.setFriction(0.7);
+      playerColliderDesc.setRestitution(0.1); // Reduce bounciness
+      playerColliderDesc.setDensity(2.0); // Higher density for more weight
+      
       const collider = physicsWorld.createCollider(playerColliderDesc, playerBody);
       
+      // Create a more visible player mesh with bright color
       const playerMesh = new THREE.Mesh(
         new THREE.CapsuleGeometry(PLAYER_RADIUS, PLAYER_HEIGHT, 20, 20),
-        new THREE.MeshStandardMaterial({ color: 0xe53935 })
+        new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0x331111 })
       );
       scene.add(playerMesh);
       
@@ -444,11 +490,13 @@
         falling: true,
         lastContactNormal: null,
         jumpCooldown: 0,
-        fallSpeed: 0.1,
-        maxFallSpeed: 0.3,
+        fallSpeed: 0.005, // Start with even lower fall speed
+        maxFallSpeed: 0.08, // Reduce max fall speed further
         mass: 1,
         isJumping: false,
-        jumpDirection: null
+        jumpDirection: null,
+        teleportSafetyEnabled: true, // New flag for safety teleport
+        lastSafePosition: new THREE.Vector3(spawnX, spawnY, spawnZ) // Remember spawn as safe position
       };
     }
 
@@ -680,214 +728,74 @@
       }
     }
 
+    // Completely rewrite the gravity function to use proper physics forces
     function applyPointGravity() {
       if (!player || !player.body) return;
       
+      // Apply gravitational force toward the center of the terrain
       const playerPos = player.body.translation();
       const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
       
       // For spherical terrain, gravity points toward the center
       let gravityDir = new THREE.Vector3().subVectors(TERRAIN_CENTER, playerPosition).normalize();
       
-      // Apply gravity based on player state
-      if (player.grounded) {
-        // When grounded, apply a small force to keep player on ground
-        if (player.lastContactNormal) {
-          const stickForce = gravityDir.clone().negate().dot(player.lastContactNormal);
-          
-          if (stickForce > 0) {
-            player.body.applyImpulse(
-              { 
-                x: player.lastContactNormal.x * stickForce * 0.01,
-                y: player.lastContactNormal.y * stickForce * 0.01, 
-                z: player.lastContactNormal.z * stickForce * 0.01
-              }, 
-              true
-            );
-          }
-        }
-      } else {
-        // When in air, apply regular gravity
-        if (player.isJumping) {
-          // Less gravity during jump
-          player.fallSpeed = Math.min(player.fallSpeed + 0.005, player.maxFallSpeed);
-        } else {
-          // Full gravity when falling
-          player.fallSpeed = Math.min(player.fallSpeed + 0.01, player.maxFallSpeed);
-        }
-        
-        // Apply movement in gravity direction
-        player.body.setTranslation({
-          x: playerPos.x + gravityDir.x * player.fallSpeed,
-          y: playerPos.y + gravityDir.y * player.fallSpeed,
-          z: playerPos.z + gravityDir.z * player.fallSpeed
-        });
-      }
-    }
-
-    function checkCollisions() {
-      if (!player || !player.body || !player.mesh) return;
+      // Calculate distance for gravity scaling (stronger when closer)
+      const distanceToCenter = playerPosition.distanceTo(TERRAIN_CENTER);
       
-      // Reset collision state if needed
-      if (player.jumpCooldown > 0) {
-        player.jumpCooldown--;
-      } else {
-        player.grounded = false;
-        player.lastContactNormal = null;
+      // Increase gravity near the surface to better stick player to ground
+      let gravityMultiplier = 1.0;
+      const surfaceProximity = Math.abs(distanceToCenter - PLANET_RADIUS);
+      
+      if (surfaceProximity < 0.5) {
+        // Apply stronger gravity near the surface (up to 2x)
+        gravityMultiplier = 2.0 - surfaceProximity * 2.0;
       }
       
-      // Remove previous collision normal arrow
-      if (collisionNormalArrow) {
-        scene.remove(collisionNormalArrow);
-        collisionNormalArrow = null;
+      const gravityStrength = GRAVITY_STRENGTH * gravityMultiplier * 
+        (PLANET_RADIUS / Math.max(distanceToCenter, PLANET_RADIUS * 0.5));
+      
+      // Apply gravity as a force to the player's dynamic body
+      player.body.addForce(
+        { 
+          x: gravityDir.x * gravityStrength,
+          y: gravityDir.y * gravityStrength, 
+          z: gravityDir.z * gravityStrength
+        }, 
+        true
+      );
+      
+      // If the player's very close to terrain, add a damping force to prevent bouncing
+      if (distanceToCenter < PLANET_RADIUS + 1.0) {
+        const vel = player.body.linvel();
+        
+        // Apply damping proportional to speed
+        const dampingFactor = 0.95;
+        player.body.setLinvel(
+          {
+            x: vel.x * dampingFactor,
+            y: vel.y * dampingFactor,
+            z: vel.z * dampingFactor
+          },
+          true
+        );
       }
       
-      // Get player position
-      const playerPos = player.body.translation();
-      const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
-      
-      // First check terrain collision
-      if (terrain && terrain.mesh) {
-        // For a sphere terrain, cast a ray from center through the player
-        const playerDir = playerPosition.clone().normalize();
-        const raycaster = new THREE.Raycaster();
-        
-        // Cast from a bit inside the center to avoid self-intersection
-        const rayStart = playerDir.clone().multiplyScalar(-0.1);
-        raycaster.set(rayStart, playerDir);
-        
-        const intersects = raycaster.intersectObject(terrain.mesh);
-        
-        if (intersects.length > 0) {
-          // Calculate distance from player to terrain surface
-          const hitPoint = intersects[0].point;
-          const distanceToGround = playerPosition.distanceTo(hitPoint) - PLAYER_RADIUS;
-          
-          if (distanceToGround <= 0.1) {
-            // We're on the ground
-            player.grounded = true;
-            player.falling = false;
-            player.lastContactNormal = intersects[0].face.normal.clone();
-            
-            // Visualize normal
-            collisionNormalArrow = new THREE.ArrowHelper(
-              player.lastContactNormal,
-              hitPoint,
-              NORMAL_ARROW_LENGTH * 1.5,
-              COLLISION_ARROW_COLOR,
-              0.3,
-              0.15
-            );
-            scene.add(collisionNormalArrow);
-            
-            // Align player with surface normal
-            alignPlayerWithSurface(player.lastContactNormal);
-            
-            return;
-          }
-        }
-      }
-      
-      // Then check other objects as before
-      for (const obj of objects) {
-        if (obj === terrain) continue; // Already checked terrain
-        
-        const objPos = obj.body.translation();
-        const objPosition = new THREE.Vector3(objPos.x, objPos.y, objPos.z);
-        
-        let collisionNormal = null;
-        let distance = 0;
-        
-        if (obj.type === 'sphere') {
-          // Sphere collision
-          const direction = new THREE.Vector3().subVectors(playerPosition, objPosition);
-          distance = direction.length() - (obj.size/2 + PLAYER_RADIUS);
-          
-          if (distance <= 0.05) {
-            collisionNormal = direction.normalize();
-          }
-        } else if (obj.type === 'box') {
-          // Box collision
-          const objRot = obj.body.rotation();
-          const objQuat = new THREE.Quaternion(objRot.x, objRot.y, objRot.z, objRot.w);
-          const invQuat = objQuat.clone().invert();
-          
-          // Get player position in box local space
-          const localPlayerPos = playerPosition.clone().sub(objPosition).applyQuaternion(invQuat);
-          
-          // Get closest point on box in local space
-          const halfSize = obj.size / 2;
-          const closestPoint = new THREE.Vector3(
-            Math.max(-halfSize, Math.min(halfSize, localPlayerPos.x)),
-            Math.max(-halfSize, Math.min(halfSize, localPlayerPos.y)),
-            Math.max(-halfSize, Math.min(halfSize, localPlayerPos.z))
-          );
-          
-          // Convert back to world space
-          const worldClosestPoint = closestPoint.clone().applyQuaternion(objQuat).add(objPosition);
-          
-          // Calculate distance and direction
-          const direction = new THREE.Vector3().subVectors(playerPosition, worldClosestPoint);
-          distance = direction.length() - PLAYER_RADIUS;
-          
-          if (distance <= 0.05) {
-            // Find which face we hit
-            const relPos = closestPoint.clone();
-            const absX = Math.abs(relPos.x);
-            const absY = Math.abs(relPos.y);
-            const absZ = Math.abs(relPos.z);
-            
-            let localNormal = new THREE.Vector3();
-            
-            if (absX >= halfSize - 0.01 && absX > absY && absX > absZ) {
-              localNormal.x = Math.sign(relPos.x);
-            } else if (absY >= halfSize - 0.01 && absY > absX && absY > absZ) {
-              localNormal.y = Math.sign(relPos.y);
-            } else if (absZ >= halfSize - 0.01) {
-              localNormal.z = Math.sign(relPos.z);
-            }
-            
-            // Transform normal to world space
-            collisionNormal = localNormal.applyQuaternion(objQuat).normalize();
-          }
-        }
-        
-        if (collisionNormal && distance <= 0.05) {
-          player.grounded = true;
-          player.falling = false;
-          player.lastContactNormal = collisionNormal;
-          
-          // Create collision normal arrow
-          collisionNormalArrow = new THREE.ArrowHelper(
-            collisionNormal,
-            playerPosition,
-            NORMAL_ARROW_LENGTH * 1.5,
-            COLLISION_ARROW_COLOR,
-            0.3,
-            0.15
-          );
-          scene.add(collisionNormalArrow);
-          
-          // Align player with surface normal
-          alignPlayerWithSurface(collisionNormal);
-          
-          break;
-        }
-      }
-      
-      // If not grounded and not jumping, start falling
-      if (!player.grounded && player.jumpCooldown <= 0) {
-        player.falling = true;
-      }
+      // Always align player with gravity direction
+      alignPlayerWithDirection(gravityDir);
     }
     
-    function alignPlayerWithSurface(normal) {
-      if (!player || !normal) return;
+    // New helper function to align player with any direction
+    function alignPlayerWithDirection(direction) {
+      if (!player || !player.body) return;
       
-      // Align player with the surface normal
+      // Create up direction opposite to gravity
+      const upDirection = direction.clone().negate().normalize();
+      
+      // Create rotation that aligns player's up with this direction
       const worldUp = new THREE.Vector3(0, 1, 0);
-      const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, normal);
+      const alignmentQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, upDirection);
       
+      // Apply this orientation to player
       player.body.setRotation({
         x: alignmentQuat.x,
         y: alignmentQuat.y,
@@ -895,11 +803,11 @@
         w: alignmentQuat.w
       });
     }
-
+    
     function handlePlayerMovement() {
       if (!player || !player.body) return;
       
-      const playerPos = player.body.translation();
+      // Get player's current state
       const playerRot = player.body.rotation();
       const playerQuat = new THREE.Quaternion(playerRot.x, playerRot.y, playerRot.z, playerRot.w);
       
@@ -912,110 +820,163 @@
       
       if (moveDirection.length() > 0) {
         moveDirection.normalize();
+        
+        // Convert local movement to world space based on player orientation
+        const worldMoveDir = moveDirection.clone().applyQuaternion(playerQuat);
+        
+        // Apply impulse in movement direction
+        const moveImpulse = 0.3 * MOVE_SPEED; // Scale force appropriately
+        player.body.applyImpulse(
+          {
+            x: worldMoveDir.x * moveImpulse,
+            y: worldMoveDir.y * moveImpulse,
+            z: worldMoveDir.z * moveImpulse
+          },
+          true
+        );
       }
       
-      // Convert local movement to world space based on player orientation
-      const worldMoveDir = moveDirection.clone().applyQuaternion(playerQuat);
+      // Apply a horizontal velocity damping to prevent sliding too much
+      const vel = player.body.linvel();
+      const horizontalDamping = player.grounded ? 0.9 : 0.98; // More damping when grounded
       
-      // Calculate new position
-      let newPosition = new THREE.Vector3(
-        playerPos.x,
-        playerPos.y,
-        playerPos.z
+      // Apply selective damping to horizontal movement only
+      // This requires transforming velocity into player's local space
+      const localVel = new THREE.Vector3(vel.x, vel.y, vel.z).applyQuaternion(playerQuat.clone().invert());
+      
+      // Apply damping to X and Z components (horizontal)
+      localVel.x *= horizontalDamping;
+      localVel.z *= horizontalDamping;
+      
+      // Transform back to world space
+      const dampedVel = localVel.applyQuaternion(playerQuat);
+      
+      // Apply the damped velocity
+      player.body.setLinvel(
+        {
+          x: dampedVel.x,
+          y: dampedVel.y,
+          z: dampedVel.z
+        },
+        true
       );
-      
-      // If grounded, move along the surface
-      if (player.grounded && player.lastContactNormal) {
-        // Project movement onto the surface plane
-        const normal = player.lastContactNormal;
-        const proj = worldMoveDir.dot(normal);
-        const tangent = new THREE.Vector3()
-          .copy(worldMoveDir)
-          .sub(normal.clone().multiplyScalar(proj))
-          .normalize();
-        
-        // Move along surface
-        if (moveDirection.length() > 0) {
-          newPosition.add(tangent.multiplyScalar(MOVE_SPEED));
-        }
-      } 
-      // If in air, allow limited movement
-      else if (player.isJumping || player.falling) {
-        if (moveDirection.length() > 0) {
-          newPosition.add(worldMoveDir.multiplyScalar(MOVE_SPEED * 0.3));
-        }
-        
-        if (player.isJumping && player.jumpDirection) {
-          // Continue jump movement
-          newPosition.add(player.jumpDirection.clone().multiplyScalar(-player.fallSpeed));
-          
-          // Transition to falling if speed becomes positive
-          if (player.fallSpeed > 0) {
-            player.isJumping = false;
-          }
-        }
-      }
-      
-      player.body.setTranslation(newPosition);
-      
-      // Check for collisions after movement
-      checkCollisions();
     }
 
     function handlePlayerJump() {
-      if (!player || !player.grounded || player.jumpCooldown > 0) return;
+      if (!player || !player.jumpCooldown > 0) return;
       
-      if (keys.space) {
-        // Use the surface normal as jump direction
-        const jumpDirection = player.lastContactNormal.clone().normalize();
-        
-        player.jumpDirection = jumpDirection;
-        player.isJumping = true;
-        player.grounded = false;
-        player.falling = false;
-        player.jumpCooldown = 15;
-        player.fallSpeed = -0.2; // Initial upward movement
+      // Check if player is close enough to the ground to jump
+      const playerPos = player.body.translation();
+      const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
+      const distanceToCenter = playerPosition.distanceTo(TERRAIN_CENTER);
+      
+      // Set grounded state based on proximity to terrain
+      player.grounded = distanceToCenter < PLANET_RADIUS + PLAYER_HEIGHT + 0.2;
+      
+      if (player.grounded && keys.space) {
+        // Calculate jump direction (away from planet center)
+        const jumpDirection = playerPosition.clone().sub(TERRAIN_CENTER).normalize();
         
         // Apply jump impulse
+        const jumpStrength = JUMP_FORCE * 10; // Adjust jump strength
         player.body.applyImpulse(
-          { 
-            x: jumpDirection.x * JUMP_FORCE,
-            y: jumpDirection.y * JUMP_FORCE, 
-            z: jumpDirection.z * JUMP_FORCE 
-          }, 
+          {
+            x: jumpDirection.x * jumpStrength,
+            y: jumpDirection.y * jumpStrength,
+            z: jumpDirection.z * jumpStrength
+          },
           true
         );
         
-        if (collisionNormalArrow) {
-          scene.remove(collisionNormalArrow);
-          collisionNormalArrow = null;
-        }
+        player.jumpCooldown = 20; // Prevent jumping again for a short time
+      }
+      
+      // Decrement jump cooldown
+      if (player.jumpCooldown > 0) {
+        player.jumpCooldown--;
       }
     }
 
-    function animate() {
+    // New function to detect and rescue player when falling through terrain
+    function handlePlayerSafety() {
+      if (!player || !player.body || !player.teleportSafetyEnabled) return;
+      
+      const playerPos = player.body.translation();
+      const playerPosition = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
+      const distanceToCenter = playerPosition.distanceTo(TERRAIN_CENTER);
+      
+      // If player is getting too close to center (inside planet core), teleport back to safety
+      if (distanceToCenter < PLANET_RADIUS - 3.0) {
+        console.warn("Safety triggered: Player detected inside planet, teleporting to safety");
+        
+        // Use the last known safe position, or a position above the terrain
+        if (player.lastSafePosition) {
+          player.body.setTranslation({
+            x: player.lastSafePosition.x,
+            y: player.lastSafePosition.y, 
+            z: player.lastSafePosition.z
+          });
+          
+          // Reset velocity to prevent continued falling
+          player.body.setLinvel({x: 0, y: 0, z: 0}, true);
+        } else {
+          // Teleport to a safe position above the terrain
+          const upVector = new THREE.Vector3(0, 1, 0);
+          const safePosition = {
+            x: 0,
+            y: PLANET_RADIUS + 5,
+            z: 0
+          };
+          player.body.setTranslation(safePosition);
+        }
+      } 
+      // Store safe positions when player is definitely on the surface
+      else if (distanceToCenter > PLANET_RADIUS && distanceToCenter < PLANET_RADIUS + 3) {
+        player.lastSafePosition = playerPosition.clone();
+      }
+    }
+
+    function animate(time) {
       animationFrameId = requestAnimationFrame(animate);
       
-      // Handle jump input
+      // Calculate FPS for performance monitoring
+      frameCounter++;
+      const elapsed = time - lastTime;
+      frameTime += elapsed;
+      
+      if (frameTime >= 1000) {
+        fps = frameCounter;
+        frameCounter = 0;
+        frameTime = 0;
+        console.log(`FPS: ${fps}`);
+      }
+      lastTime = time;
+      
+      // Handle player input
       handlePlayerJump();
-      
-      // Apply gravity
-      applyPointGravity();
-      
-      // Handle player movement
       handlePlayerMovement();
       
-      // Step physics
-      physicsWorld.step();
+      // Handle player safety before physics step
+      handlePlayerSafety();
       
-      // Update collision arrow position
-      if (collisionNormalArrow && player && player.body) {
-        const playerPos = player.body.translation();
-        collisionNormalArrow.position.set(playerPos.x, playerPos.y, playerPos.z);
+      // Apply gravity to player
+      applyPointGravity();
+      
+      // Use multiple physics substeps for better stability
+      const substeps = 3; // Increase substeps for better collision detection
+      for (let i = 0; i < substeps; i++) {
+        physicsWorld.step();
       }
       
-      controls.update();
+      // Run player safety check again after physics
+      handlePlayerSafety();
       
+      // Ensure camera follows player
+      if (player && player.mesh) {
+        controls.target.copy(player.mesh.position);
+      }
+      
+      // Update object transforms
       if (player) {
         updateObjectTransform(player);
       }
@@ -1024,6 +985,8 @@
         updateObjectTransform(obj);
       }
       
+      // Update controls and render
+      controls.update();
       renderer.render(scene, camera);
     }
 
