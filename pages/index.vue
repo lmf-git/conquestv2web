@@ -1192,21 +1192,6 @@ function updatePlayer(deltaTime) {
       onSurface = true;
       playerState.onGround = true;
       
-      // Position adjustment logic
-      // Calculate where feet should be relative to the hit point
-      const feetTargetHeight = PLAYER_RADIUS - TERRAIN_SINK;
-      
-      // Instead of directly setting position, move it gradually towards the correct height
-      // This avoids abrupt repositioning that can cause sticking
-      if (closestHitDistance < feetTargetHeight) {
-        // Only adjust position if we're too close to or penetrating the ground
-        const penetrationDepth = feetTargetHeight - closestHitDistance;
-        
-        // Apply a partial correction - don't snap fully to the target position
-        const correctionFactor = 0.4; // Lower = more gradual correction
-        position.add(surfaceNormal.clone().multiplyScalar(penetrationDepth * correctionFactor));
-      }
-      
       // Cancel velocity going into the ground, but preserve parallel motion
       const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
       if (normalVelocity.dot(surfaceNormal) < 0) {
