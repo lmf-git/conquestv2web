@@ -2,7 +2,7 @@
   <div class="container">
     <canvas ref="canvasRef"></canvas>
     <div class="controls-info">
-      <p>WASD: Move | Q/E: Turn | SPACE: Jump</p>
+      <p>WASD: Move | Q/E: Turn | SPACE: Jump | Push objects with your body</p>
     </div>
   </div>
 </template>
@@ -22,6 +22,13 @@ let terrain, playerMesh, playerCollider;
 // Rapier physics variables
 let world, playerBody;
 let physicsInitialized = false;
+
+// Add a variable to track collider initialization 
+let collidersInitialized = false;
+
+// Arrays to store colliders and their mesh representations
+let fixedBoxes = [];
+let dynamicObjects = [];
 
 // Player movement
 const playerState = {
@@ -59,6 +66,11 @@ const ORIENTATION_SMOOTHING = 0.9; // Higher value = smoother but slower orienta
 const MAX_SLOPE_CLIMB_ANGLE = Math.PI / 4; // Maximum slope the player can climb (45 degrees)
 // Add slope constants for movement limitations but not visual orientation
 const MAX_CLIMBABLE_SLOPE = Math.PI / 5; // Maximum slope angle the player can climb (36 degrees)
+const NUM_FIXED_BOXES = 5; // Number of fixed box colliders
+const NUM_DYNAMIC_OBJECTS = 10; // Number of dynamic objects to create
+const BOX_SIZE = 2; // Size of fixed boxes
+const DYNAMIC_OBJECT_SIZE = 1; // Size of dynamic objects
+const DYNAMIC_OBJECT_MASS = 1; // Mass of dynamic objects
 
 // Generate spherical terrain vertices with height variations
 function generateSphericalTerrain() {
@@ -141,6 +153,141 @@ function createTrimeshCollider(geometry) {
   return RAPIER.ColliderDesc.trimesh(vertices, indices);
 }
 
+// Create a fixed box collider with a visual mesh
+function createFixedBox(position, size) {
+  // Create the collider
+  const boxColliderDesc = RAPIER.ColliderDesc.cuboid(
+    size.x / 2, size.y / 2, size.z / 2
+  );
+  
+  // Adjust the collision groups for user-controlled detection
+  boxColliderDesc.setCollisionGroups(0x00010001); // Group 1, can collide with Group 1
+  
+  // Calculate position based on gravity direction at that point
+  const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
+  const worldUp = gravityDir.clone().negate();
+  
+  // Create quaternion to orient box with gravity direction
+  const worldX = new THREE.Vector3(1, 0, 0);
+  const right = worldX.clone().projectOnPlane(worldUp).normalize();
+  if (right.lengthSq() < 0.01) {
+    right.set(0, 0, 1);
+  }
+  const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
+  const rotMatrix = new THREE.Matrix4().makeBasis(right, worldUp, forward);
+  const orientation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+  
+  // Create a rigid body description
+  const rigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
+    .setTranslation(position.x, position.y, position.z)
+    .setRotation({
+      x: orientation.x,
+      y: orientation.y,
+      z: orientation.z,
+      w: orientation.w
+    });
+  
+  // Create the rigid body and collider
+  const boxBody = world.createRigidBody(rigidBodyDesc);
+  const boxCollider = world.createCollider(boxColliderDesc, boxBody);
+  
+  // Create a visual representation in Three.js
+  const boxGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+  const boxMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x8844aa,
+    roughness: 0.7
+  });
+  const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
+  boxMesh.position.copy(position);
+  boxMesh.quaternion.copy(orientation);
+  boxMesh.castShadow = true;
+  boxMesh.receiveShadow = true;
+  scene.add(boxMesh);
+  
+  // Return both the physics body and the mesh
+  return {
+    body: boxBody,
+    collider: boxCollider,
+    mesh: boxMesh
+  };
+}
+
+// Create a dynamic physics object with visual representation
+function createDynamicObject(position, size, isSphere = false) {
+  // Create the appropriate collider description based on shape
+  let colliderDesc;
+  
+  if (isSphere) {
+    colliderDesc = RAPIER.ColliderDesc.ball(size / 2);
+  } else {
+    colliderDesc = RAPIER.ColliderDesc.cuboid(size / 2, size / 2, size / 2);
+  }
+  
+  // Set material properties for the collider
+  colliderDesc.setRestitution(0.4); // Bounciness
+  colliderDesc.setFriction(0.8);    // Friction
+  colliderDesc.setDensity(1.0);     // Add density for better mass properties
+  
+  // Calculate gravity direction for initial orientation
+  const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
+  const worldUp = gravityDir.clone().negate();
+  
+  // Create quaternion to orient object with gravity
+  const worldX = new THREE.Vector3(1, 0, 0);
+  const right = worldX.clone().projectOnPlane(worldUp).normalize();
+  if (right.lengthSq() < 0.01) {
+    right.set(0, 0, 1);
+  }
+  const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
+  const rotMatrix = new THREE.Matrix4().makeBasis(right, worldUp, forward);
+  const orientation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+  
+  // Create rigid body description
+  const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(position.x, position.y, position.z)
+    .setRotation({
+      x: orientation.x,
+      y: orientation.y, 
+      z: orientation.z,
+      w: orientation.w
+    })
+    // Add some linear damping to prevent excessive bouncing
+    .setLinearDamping(0.2)
+    .setAngularDamping(0.3);
+  
+  // Create the rigid body and collider
+  const dynamicBody = world.createRigidBody(rigidBodyDesc);
+  const dynamicCollider = world.createCollider(colliderDesc, dynamicBody);
+  
+  // Create the appropriate visual geometry
+  let geometry;
+  if (isSphere) {
+    geometry = new THREE.SphereGeometry(size / 2, 16, 16);
+  } else {
+    geometry = new THREE.BoxGeometry(size, size, size);
+  }
+  
+  // Random color for variety
+  const hue = Math.random();
+  const material = new THREE.MeshStandardMaterial({ 
+    color: new THREE.Color().setHSL(hue, 0.7, 0.5),
+    roughness: 0.5
+  });
+  
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  
+  // Return the object data
+  return {
+    body: dynamicBody,
+    collider: dynamicCollider,
+    mesh: mesh,
+    isSphere: isSphere
+  };
+}
+
 // Initialize physics
 async function initPhysics() {
   await RAPIER.init();
@@ -170,6 +317,9 @@ async function initPhysics() {
     PLAYER_HEIGHT/2 - PLAYER_RADIUS, 
     PLAYER_RADIUS
   );
+  // Set collision groups for player
+  playerColliderDesc.setCollisionGroups(0x00010001); // Group 1, can collide with Group 1
+  
   playerCollider = world.createCollider(playerColliderDesc, playerBody);
   
   physicsInitialized = true;
@@ -266,6 +416,76 @@ function initThree() {
   window.addEventListener('resize', onWindowResize);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  
+  // Add dynamic objects scattered around
+  for (let i = 0; i < NUM_DYNAMIC_OBJECTS; i++) {
+    // Calculate positions distributed around the planet surface
+    const phi = Math.PI * (0.2 + 0.6 * Math.random()); // Avoid poles
+    const theta = Math.PI * 2 * Math.random();
+    
+    // Convert spherical to cartesian coordinates
+    const x = Math.sin(phi) * Math.cos(theta);
+    const y = Math.cos(phi);
+    const z = Math.sin(phi) * Math.sin(theta);
+    
+    // Set position higher above the terrain for a more dramatic fall
+    const pos = new THREE.Vector3(x, y, z).normalize();
+    // Increase height to ensure objects start well above terrain
+    const heightVariation = 10 + 20 * Math.random(); // Between 10 and 30 units above terrain
+    const distance = PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + heightVariation;
+    pos.multiplyScalar(distance);
+    
+    // Randomly choose between sphere and cube
+    const isSphere = Math.random() > 0.5;
+    
+    // Randomize size slightly for more variety
+    const objectSize = DYNAMIC_OBJECT_SIZE * (0.5 + Math.random());
+    
+    // Create the dynamic object and add it to our array
+    const dynamicObj = createDynamicObject(pos, objectSize, isSphere);
+    
+    // Add some initial velocity for more interesting motion
+    // Random direction perpendicular to gravity
+    const gravityDir = pos.clone().sub(GRAVITY_CENTER).normalize();
+    const perpAxis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)
+      .normalize()
+      .cross(gravityDir)
+      .normalize();
+    
+    // Small randomized impulse to get things moving
+    const impulseStrength = Math.random() * 5;
+    
+    try {
+      // Try different Rapier method naming conventions
+      // Use applyImpulse instead of addImpulse
+      dynamicObj.body.applyImpulse(
+        {
+          x: perpAxis.x * impulseStrength,
+          y: perpAxis.y * impulseStrength,
+          z: perpAxis.z * impulseStrength
+        },
+        true
+      );
+    } catch (error) {
+      console.warn("Error applying impulse with applyImpulse:", error);
+      
+      try {
+        // Fall back to direct velocity setting
+        dynamicObj.body.setLinvel(
+          {
+            x: perpAxis.x * impulseStrength * 0.1,
+            y: perpAxis.y * impulseStrength * 0.1,
+            z: perpAxis.z * impulseStrength * 0.1
+          },
+          true
+        );
+      } catch (e) {
+        console.warn("Fallback also failed, using alternative method:", e);
+      }
+    }
+    
+    dynamicObjects.push(dynamicObj);
+  }
 }
 
 // Event handlers
@@ -383,6 +603,191 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
         z: orientationQuaternion.z,
         w: orientationQuaternion.w
       }, true);
+    }
+  }
+}
+
+// Detect and resolve collisions between player and fixed boxes
+function handlePlayerCollisions() {
+  // Get player position
+  const playerPosition = new THREE.Vector3(
+    playerBody.translation().x,
+    playerBody.translation().y,
+    playerBody.translation().z
+  );
+  
+  // Loop through all fixed boxes
+  for (const box of fixedBoxes) {
+    // Get box position
+    const boxPosition = new THREE.Vector3(
+      box.body.translation().x,
+      box.body.translation().y,
+      box.body.translation().z
+    );
+    
+    // Create a Box3 for the fixed box
+    const boxSize = new THREE.Vector3(
+      box.mesh.geometry.parameters.width,
+      box.mesh.geometry.parameters.height,
+      box.mesh.geometry.parameters.depth
+    );
+    
+    // Use Rapier's collision detection
+    const boxCollider = box.collider;
+    const playerColliderHandle = playerCollider.handle;
+    
+    // Get contact pair between the two colliders
+    const contact = world.contactPair(boxCollider.handle, playerColliderHandle);
+    
+    if (contact !== null && contact.hasAnyContact()) {
+      // Get the manifold points
+      const manifolds = contact.manifolds();
+      
+      for (let i = 0; i < manifolds.length; i++) {
+        const manifold = manifolds[i];
+        const points = manifold.points();
+        
+        // Handle each contact point
+        for (let j = 0; j < points.length; j++) {
+          const point = points[j];
+          const depth = point.depth();
+          
+          // Only handle significant penetration
+          if (depth > 0.01) {
+            // Get normal direction
+            const worldNormal = manifold.normal();
+            const normal = new THREE.Vector3(worldNormal.x, worldNormal.y, worldNormal.z);
+            
+            // Push player out along normal based on penetration depth
+            // For kinematic bodies, we need to manually update position
+            playerPosition.add(normal.multiplyScalar(depth * 1.01)); // Slightly more than depth
+            
+            // Zero out velocity in the direction of the normal if moving into the object
+            const velDotNormal = playerState.velocity.dot(normal);
+            if (velDotNormal < 0) {
+              // Only remove velocity component going into the object
+              playerState.velocity.sub(normal.clone().multiplyScalar(velDotNormal));
+              
+              // Add some friction
+              playerState.velocity.multiplyScalar(0.8);
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Update player position after handling collisions
+  playerBody.setTranslation({
+    x: playerPosition.x,
+    y: playerPosition.y,
+    z: playerPosition.z
+  }, true);
+}
+
+// Update dynamic objects based on gravity
+function updateDynamicObjects() {
+  // Update each dynamic object
+  for (const obj of dynamicObjects) {
+    // Get object position
+    const position = new THREE.Vector3(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+    
+    // Calculate gravity direction towards planet center
+    const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
+    
+    // Check if the body is dynamic
+    if (obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) {
+      try {
+        // Get mass
+        const mass = obj.body.mass();
+        
+        // Calculate gravity force
+        const gravityForce = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * mass);
+        
+        // Try using applyForce instead of addForce
+        obj.body.applyForce(
+          { x: gravityForce.x, y: gravityForce.y, z: gravityForce.z },
+          true
+        );
+        
+        // For non-spheres, try to align with gravity
+        if (!obj.isSphere) {
+          const worldUp = gravityDir.clone().negate();
+          const objQuat = obj.mesh.quaternion;
+          const objUp = new THREE.Vector3(0, 1, 0).applyQuaternion(objQuat);
+          const alignmentTorque = new THREE.Vector3().crossVectors(objUp, worldUp);
+          
+          if (alignmentTorque.lengthSq() > 0.01) {
+            const strength = 0.5 * objUp.angleTo(worldUp);
+            alignmentTorque.normalize().multiplyScalar(strength);
+            
+            // Try using applyTorque instead of addTorque
+            obj.body.applyTorque(
+              { x: alignmentTorque.x, y: alignmentTorque.y, z: alignmentTorque.z },
+              true
+            );
+          }
+        }
+      } catch (error) {
+        console.warn("Error applying physics:", error);
+        
+        // Ultimate fallback - try direct velocity modification as a gravity simulation
+        try {
+          // Get current velocity
+          const vel = obj.body.linvel();
+          const currentVel = new THREE.Vector3(vel.x, vel.y, vel.z);
+          
+          // Add gravity increment (scaled down for direct velocity change)
+          const gravityChange = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * 0.016); // ~1/60 for a frame
+          currentVel.add(gravityChange);
+          
+          // Apply the new velocity
+          obj.body.setLinvel(
+            { x: currentVel.x, y: currentVel.y, z: currentVel.z },
+            true
+          );
+        } catch (e) {
+          console.error("All physics methods failed:", e);
+        }
+      }
+    }
+    
+    // Update visual representation to match physics
+    obj.mesh.position.set(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+    
+    obj.mesh.quaternion.set(
+      obj.body.rotation().x,
+      obj.body.rotation().y,
+      obj.body.rotation().z,
+      obj.body.rotation().w
+    );
+  }
+}
+
+// Add a new function to properly set up collider materials to prevent excessive bouncing
+function initDynamicObjectCollisions() {
+  // Update all dynamic object colliders to have appropriate restitution and friction
+  for (const obj of dynamicObjects) {
+    try {
+      // Get collider handle
+      const colliderHandle = obj.collider.handle;
+      
+      // Set low restitution (bounciness) - we don't want too much bounce off terrain
+      const materialProps = world.getMaterialForCollider(colliderHandle);
+      if (materialProps) {
+        world.setRestitutionForCollider(colliderHandle, 0.1); // Very low bounce
+        world.setFrictionForCollider(colliderHandle, 0.9);    // High friction
+      }
+    } catch (error) {
+      console.warn("Could not set material properties:", error);
     }
   }
 }
@@ -673,6 +1078,9 @@ function updatePlayer(deltaTime) {
     onSurface && !wasJumping, 
     up
   );
+  
+  // Also apply collision handling
+  handlePlayerCollisions();
 }
 
 // Animation loop
@@ -682,6 +1090,14 @@ function animate() {
   if (physicsInitialized) {
     // Update physics
     updatePlayer(deltaTime);
+    updateDynamicObjects();
+    
+    // Execute collision configuration once after objects are created
+    if (dynamicObjects.length > 0 && !collidersInitialized) {
+      initDynamicObjectCollisions();
+      collidersInitialized = true;
+    }
+    
     world.step();
     
     // Uncomment to add debug visualization
