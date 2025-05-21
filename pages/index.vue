@@ -1083,6 +1083,7 @@
       
       // Set position higher above the terrain for a more dramatic fall
       const pos = new THREE.Vector3(x, y, z).normalize();
+      
       // Increase height to ensure objects start well above terrain
       const heightVariation = 10 + 20 * Math.random(); // Between 10 and 30 units above terrain
       const distance = PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + heightVariation;
@@ -1096,47 +1097,6 @@
       
       // Create the dynamic object and add it to our array
       const dynamicObj = createDynamicObject(pos, objectSize, isSphere);
-      
-      // Add some initial velocity for more interesting motion
-      // Random direction perpendicular to gravity
-      const gravityDir = pos.clone().sub(GRAVITY_CENTER).normalize();
-      const perpAxis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)
-        .normalize()
-        .cross(gravityDir)
-        .normalize();
-      
-      // Small randomized impulse to get things moving
-      const impulseStrength = Math.random() * 5;
-      
-      try {
-        // Try different Rapier method naming conventions
-        // Use applyImpulse instead of addImpulse
-        dynamicObj.body.applyImpulse(
-          {
-            x: perpAxis.x * impulseStrength,
-            y: perpAxis.y * impulseStrength,
-            z: perpAxis.z * impulseStrength
-          },
-          true
-        );
-      } catch (error) {
-        console.warn("Error applying impulse with applyImpulse:", error);
-        
-        try {
-          // Fall back to direct velocity setting
-          dynamicObj.body.setLinvel(
-            {
-              x: perpAxis.x * impulseStrength * 0.1,
-              y: perpAxis.y * impulseStrength * 0.1,
-              z: perpAxis.z * impulseStrength * 0.1
-            },
-            true
-          );
-        } catch (e) {
-          console.warn("Fallback also failed, using alternative method:", e);
-        }
-      }
-      
       dynamicObjects.push(dynamicObj);
     }
 
