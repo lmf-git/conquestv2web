@@ -21,7 +21,6 @@
 
   // Rapier physics variables
   let world, playerBody;
-  let physicsInitialized = false;
 
   // Arrays to store colliders and their mesh representations
   let fixedBoxes = [];
@@ -395,7 +394,7 @@
 
   // Detect and resolve collisions between player and fixed boxes
   function handlePlayerCollisions() {
-    if (!physicsInitialized || !playerBody || !playerCollider) return;
+    if (!playerBody || !playerCollider) return;
     
     // Get player position
     const playerPosition = new THREE.Vector3(
@@ -628,7 +627,7 @@
     playerMesh.quaternion.copy(orientationQuaternion);
     
     // Update physics body - only if it exists and orientation is valid
-    if (physicsInitialized && playerBody && orientationQuaternion) {
+    if (playerBody && orientationQuaternion) {
       // Ensure visual and physics representations match exactly
       playerBody.setTranslation({ 
         x: position.x, 
@@ -657,7 +656,7 @@
 
   // Apply point gravity and handle movement
   function updatePlayer(deltaTime) {
-    if (!physicsInitialized) return;
+    if (!playerBody) return;
     
     // Get current position
     const position = new THREE.Vector3(
@@ -952,19 +951,18 @@
   function animate() {
     const deltaTime = 1/60; // Fixed time step
     
-    if (physicsInitialized) {
-      // Update physics
-      updatePlayer(deltaTime);
-      updateDynamicObjects();
-      
-      world.step();
-    }
+    // Update physics
+    updatePlayer(deltaTime);
+    updateDynamicObjects();
+    
+    world.step();
     
     // Render scene
     renderer.render(scene, camera);
     
     requestAnimationFrame(animate);
   }
+
   // Lifecycle hooks
   onMounted(async () => {
     await RAPIER.init();
@@ -999,7 +997,6 @@
     
     playerCollider = world.createCollider(playerColliderDesc, playerBody);
     
-    physicsInitialized = true;
 
   // Scene
     scene = new THREE.Scene();
