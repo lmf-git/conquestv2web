@@ -444,54 +444,6 @@ function handlePlayerCollisions() {
     }
   }
 
-  // Also check for collisions with dynamic objects
-  for (const obj of dynamicObjects) {
-    if (!obj.body || !obj.collider) continue;
-
-    const contact = world.contactPair(
-      obj.collider.handle,
-      playerCollider.handle
-    );
-
-    if (contact && typeof contact.hasAnyContact === "function" && contact.hasAnyContact()) {
-      hasCollision = true;
-
-      const manifolds = contact.manifolds();
-      for (let i = 0; i < manifolds.length; i++) {
-        const manifold = manifolds[i];
-        const worldNormal = manifold.normal();
-        const normal = new THREE.Vector3(
-          worldNormal.x,
-          worldNormal.y,
-          worldNormal.z
-        );
-        const points = manifold.points();
-
-        for (let j = 0; j < points.length; j++) {
-          const point = points[j];
-          const depth = point.depth();
-
-          if (depth > bestPenetrationDepth) {
-            bestPenetrationDepth = depth;
-            bestCollisionNormal = normal.clone();
-          }
-        }
-      }
-
-      // Apply impulse to the dynamic object to push it away
-      const pushImpulse = bestCollisionNormal.clone().multiplyScalar(-5);
-      obj.body.applyImpulseAtPoint(
-        { x: pushImpulse.x, y: pushImpulse.y, z: pushImpulse.z },
-        {
-          x: playerPosition.x,
-          y: playerPosition.y,
-          z: playerPosition.z,
-        },
-        true
-      );
-    }
-  }
-
   // Enhanced raycasting as fallback to catch more collisions
   if (!hasCollision) {
     // Perform more comprehensive raycast collision detection
