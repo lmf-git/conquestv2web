@@ -45,6 +45,7 @@ const TERRAIN_HEIGHT_SCALE = 50;
 const TURN_SPEED = 2;
 const NUM_DYNAMIC_OBJECTS = 10;
 const DYNAMIC_OBJECT_SIZE = 1;
+const SPAWN_HEIGHT = 20; // Add this constant at the top level
 
 function generateSphericalTerrain() {
   const geometry = new THREE.IcosahedronGeometry(PLANET_RADIUS, 4);
@@ -526,11 +527,12 @@ function handlePlayerCollisions() {
           const hitBox = fixedBoxes.find((box) => box.mesh === hit.object);
           if (!hitBox) continue;
 
-          const normal = hit.face.normal.clone();
+          // Fix: Define hitNormal variable from the hit face normal
+          const hitNormal = hit.face.normal.clone();
           const normalMatrix = new THREE.Matrix3().getNormalMatrix(
             hit.object.matrixWorld
           );
-          const worldNormal = normal.applyMatrix3(normalMatrix).normalize();
+          const worldNormal = hitNormal.applyMatrix3(normalMatrix).normalize();
 
           if (hit.distance < closestHitDistance) {
             closestHitDistance = hit.distance;
@@ -984,6 +986,96 @@ function updatePlayer(deltaTime) {
   handlePlayerCollisions();
 }
 
+function createSpawnPlatform() {
+  const spawnPlatformSize = new THREE.Vector3(10, 1, 10); // Width, height, depth
+  const spawnPosition = new THREE.Vector3(
+    0,
+    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + SPAWN_HEIGHT - 2, // Fixed: using SPAWN_HEIGHT instead of spawnHeight
+    0
+  );
+  
+  // Calculate direction to center for orientation
+  const gravityDir = spawnPosition.clone().sub(GRAVITY_CENTER).normalize();
+  const worldUp = gravityDir.clone().negate();
+  
+  // Create the platform with a distinct color
+  const platformObj = createFixedColliderOnSurface(
+    spawnPosition,
+    worldUp,
+    spawnPlatformSize,
+    0x2299ff, // Blue color
+    "box"
+  );
+  
+  if (platformObj) {
+    fixedBoxes.push(platformObj);
+    console.log("Created spawn platform");
+  }
+}
+
+function updateDynamicObjects() {
+  for (const obj of dynamicObjects) {
+    const position = new THREE.Vector3(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+
+    const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
+
+    if (obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) {
+      const mass = obj.isSphere ? 1 : 2;
+
+      const gravityImpulse = gravityDir
+        .clone()
+        .multiplyScalar(GRAVITY_STRENGTH * mass * 0.016);
+
+      obj.body.applyImpulse(
+        { x: gravityImpulse.x, y: gravityImpulse.y, z: gravityImpulse.z },
+        true
+      );
+
+      if (!obj.isSphere) {
+        const worldUp = gravityDir.clone().negate();
+        const objQuat = obj.mesh.quaternion;
+        const objUp = new THREE.Vector3(0, 1, 0).applyQuaternion(objQuat);
+        const alignmentTorque = new THREE.Vector3().crossVectors(
+          objUp,
+          worldUp
+        );
+
+        if (alignmentTorque.lengthSq() > 0.01) {
+          const strength = 0.1 * objUp.angleTo(worldUp);
+          alignmentTorque.normalize().multiplyScalar(strength);
+
+          obj.body.applyTorqueImpulse(
+            {
+              x: alignmentTorque.x,
+              y: alignmentTorque.y,
+              z: alignmentTorque.z,
+            },
+            true
+          );
+        }
+      }
+    }
+
+    obj.mesh.position.set(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+
+    obj.mesh.quaternion.set(
+      obj.body.rotation().x,
+      obj.body.rotation().y,
+      obj.body.rotation().z,
+      obj.body.rotation().w
+    );
+  }
+}
+
+// Add the missing animate function
 function animate() {
   const deltaTime = 1 / 60;
 
@@ -1007,24 +1099,7 @@ onMounted(async () => {
 
   world.createCollider(terrainColliderDesc);
 
-  const spawnHeight = 20;
-  const playerBodyDesc =
-    RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-      0,
-      PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT / 2 + spawnHeight,
-      0
-    );
-  playerBody = world.createRigidBody(playerBodyDesc);
-
-  const playerColliderDesc = RAPIER.ColliderDesc.capsule(
-    PLAYER_HEIGHT / 2 - PLAYER_RADIUS,
-    PLAYER_RADIUS
-  );
-
-  playerColliderDesc.setCollisionGroups(0x00010001);
-
-  playerCollider = world.createCollider(playerColliderDesc, playerBody);
-
+  // Initialize scene and renderer first
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87ceeb);
 
@@ -1076,6 +1151,27 @@ onMounted(async () => {
   terrain.castShadow = true;
   terrain.receiveShadow = true;
   scene.add(terrain);
+  
+  // Now create the spawn platform AFTER scene initialization
+  createSpawnPlatform();
+  
+  // Then create the player
+  const playerBodyDesc =
+    RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+      0,
+      PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT / 2 + SPAWN_HEIGHT,
+      0
+    );
+  playerBody = world.createRigidBody(playerBodyDesc);
+
+  const playerColliderDesc = RAPIER.ColliderDesc.capsule(
+    PLAYER_HEIGHT / 2 - PLAYER_RADIUS,
+    PLAYER_RADIUS
+  );
+
+  playerColliderDesc.setCollisionGroups(0x00010001);
+
+  playerCollider = world.createCollider(playerColliderDesc, playerBody);
 
   const capsuleGeometry = new THREE.CapsuleGeometry(
     PLAYER_RADIUS,
@@ -1193,68 +1289,6 @@ function createDynamicObject(position, size, isSphere = false) {
     mesh: mesh,
     isSphere: isSphere,
   };
-}
-
-function updateDynamicObjects() {
-  for (const obj of dynamicObjects) {
-    const position = new THREE.Vector3(
-      obj.body.translation().x,
-      obj.body.translation().y,
-      obj.body.translation().z
-    );
-
-    const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
-
-    if (obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) {
-      const mass = obj.isSphere ? 1 : 2;
-
-      const gravityImpulse = gravityDir
-        .clone()
-        .multiplyScalar(GRAVITY_STRENGTH * mass * 0.016);
-
-      obj.body.applyImpulse(
-        { x: gravityImpulse.x, y: gravityImpulse.y, z: gravityImpulse.z },
-        true
-      );
-
-      if (!obj.isSphere) {
-        const worldUp = gravityDir.clone().negate();
-        const objQuat = obj.mesh.quaternion;
-        const objUp = new THREE.Vector3(0, 1, 0).applyQuaternion(objQuat);
-        const alignmentTorque = new THREE.Vector3().crossVectors(
-          objUp,
-          worldUp
-        );
-
-        if (alignmentTorque.lengthSq() > 0.01) {
-          const strength = 0.1 * objUp.angleTo(worldUp);
-          alignmentTorque.normalize().multiplyScalar(strength);
-
-          obj.body.applyTorqueImpulse(
-            {
-              x: alignmentTorque.x,
-              y: alignmentTorque.y,
-              z: alignmentTorque.z,
-            },
-            true
-          );
-        }
-      }
-    }
-
-    obj.mesh.position.set(
-      obj.body.translation().x,
-      obj.body.translation().y,
-      obj.body.translation().z
-    );
-
-    obj.mesh.quaternion.set(
-      obj.body.rotation().x,
-      obj.body.rotation().y,
-      obj.body.rotation().z,
-      obj.body.rotation().w
-    );
-  }
 }
 </script>
 
