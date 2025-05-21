@@ -400,11 +400,7 @@ function handlePlayerCollisions() {
   let hasCollision = false;
   let bestCollisionNormal = null;
   let bestPenetrationDepth = 0;
-  let isReorienting = false;
   let collisionWithFixed = false;
-
-  // Increase collision detection radius to prevent tunneling
-  const collisionRadius = PLAYER_RADIUS * 1.1;
 
   // Check for collisions with fixed boxes
   for (const box of fixedBoxes) {
@@ -562,7 +558,6 @@ function handlePlayerCollisions() {
       playerState.surfaceNormal = bestCollisionNormal.clone();
       playerState.onGround = true;
       playerState.falling = false;
-      isReorienting = true;
       
       // Set fixed object flag
       playerState.onFixedObject = collisionWithFixed;
@@ -618,7 +613,8 @@ function handlePlayerCollisions() {
   }, true);
 
   // Update orientation ONLY if we need to reorient (ground contact)
-  if (hasCollision && isReorienting && playerState.surfaceNormal) {
+  if (hasCollision && playerState.surfaceNormal && 
+      bestCollisionNormal.dot(gravityUp) > 0.5) {
     updatePlayerPositionAndOrientation(
       playerPosition.clone(),
       playerState.surfaceNormal,
