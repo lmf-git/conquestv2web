@@ -444,19 +444,71 @@ function handlePlayerCollisions() {
     }
   }
 
+  // Also check for collisions with dynamic objects
+  for (const obj of dynamicObjects) {
+    if (!obj.body || !obj.collider) continue;
+
+    const contact = world.contactPair(
+      obj.collider.handle,
+      playerCollider.handle
+    );
+
+    if (contact && typeof contact.hasAnyContact === "function" && contact.hasAnyContact()) {
+      hasCollision = true;
+
+      const manifolds = contact.manifolds();
+      for (let i = 0; i < manifolds.length; i++) {
+        const manifold = manifolds[i];
+        const worldNormal = manifold.normal();
+        const normal = new THREE.Vector3(
+          worldNormal.x,
+          worldNormal.y,
+          worldNormal.z
+        );
+        const points = manifold.points();
+
+        for (let j = 0; j < points.length; j++) {
+          const point = points[j];
+          const depth = point.depth();
+
+          if (depth > bestPenetrationDepth) {
+            bestPenetrationDepth = depth;
+            bestCollisionNormal = normal.clone();
+          }
+        }
+      }
+
+      // Apply impulse to the dynamic object to push it away
+      const pushImpulse = bestCollisionNormal.clone().multiplyScalar(-5);
+      obj.body.applyImpulseAtPoint(
+        { x: pushImpulse.x, y: pushImpulse.y, z: pushImpulse.z },
+        {
+          x: playerPosition.x,
+          y: playerPosition.y,
+          z: playerPosition.z,
+        },
+        true
+      );
+    }
+  }
+
   // Enhanced raycasting as fallback to catch more collisions
   if (!hasCollision) {
     // Perform more comprehensive raycast collision detection
     // Cast rays in more directions, including the movement direction
     const directionNormalized = playerState.direction.clone().normalize();
-    
+
     const capsuleBottomOffset = PLAYER_HEIGHT / 2;
-    const capsuleCenterOffset = 0;  // Added to check the center of the capsule too
-    
+    const capsuleCenterOffset = 0; // Added to check the center of the capsule too
+
     // Positions to raycast from - include more points around capsule
     const rayStartPositions = [
       // Bottom of capsule
-      playerPosition.clone().add(gravityUp.clone().negate().multiplyScalar(capsuleBottomOffset - 0.05)),
+      playerPosition
+        .clone()
+        .add(
+          gravityUp.clone().negate().multiplyScalar(capsuleBottomOffset - 0.05)
+        ),
       // Middle of capsule
       playerPosition.clone().add(gravityUp.clone().negate().multiplyScalar(capsuleCenterOffset)),
       // Top of capsule
@@ -465,33 +517,51 @@ function handlePlayerCollisions() {
 
     const forwardDir = new THREE.Vector3(1, 0, 0).cross(gravityUp).normalize();
     const rightDir = gravityUp.clone().cross(forwardDir).normalize();
-    
+
     // Generate rays in a more comprehensive pattern
     const rayPositions = [];
-    
+
     for (const startPos of rayStartPositions) {
       // Center ray
       rayPositions.push(startPos.clone());
-      
+
       // Rays around the capsule
-      const radius = PLAYER_RADIUS * 0.9;  // Slightly inside the capsule
+      const radius = PLAYER_RADIUS * 0.9; // Slightly inside the capsule
       const rayDirections = [
         forwardDir.clone().multiplyScalar(radius),
         rightDir.clone().multiplyScalar(radius),
         forwardDir.clone().negate().multiplyScalar(radius),
         rightDir.clone().negate().multiplyScalar(radius),
         // Add diagonal rays
-        forwardDir.clone().add(rightDir).normalize().multiplyScalar(radius),
-        forwardDir.clone().add(rightDir.clone().negate()).normalize().multiplyScalar(radius),
-        forwardDir.clone().negate().add(rightDir).normalize().multiplyScalar(radius),
-        forwardDir.clone().negate().add(rightDir.clone().negate()).normalize().multiplyScalar(radius),
+        forwardDir
+          .clone()
+          .add(rightDir)
+          .normalize()
+          .multiplyScalar(radius),
+        forwardDir
+          .clone()
+          .add(rightDir.clone().negate())
+          .normalize()
+          .multiplyScalar(radius),
+        forwardDir
+          .clone()
+          .negate()
+          .add(rightDir)
+          .normalize()
+          .multiplyScalar(radius),
+        forwardDir
+          .clone()
+          .negate()
+          .add(rightDir.clone().negate())
+          .normalize()
+          .multiplyScalar(radius),
       ];
-      
+
       // Add movement direction ray - important to prevent tunneling
       if (playerState.direction.lengthSq() > 0) {
         rayDirections.push(directionNormalized.clone().multiplyScalar(radius));
       }
-      
+
       for (const dir of rayDirections) {
         rayPositions.push(startPos.clone().add(dir));
       }
@@ -499,13 +569,13 @@ function handlePlayerCollisions() {
 
     let closestHitDistance = Infinity;
     const objectMeshes = fixedBoxes.map((box) => box.mesh);
-    
+
     // Cast rays in all directions, not just gravity direction
     const rayDirections = [
-      gravityUp.clone().negate(),  // Down
+      gravityUp.clone().negate(), // Down
       // Using direction of movement for rays to prevent tunneling
-      directionNormalized.clone().negate(),  // Opposite to movement
-      directionNormalized.clone(),           // Direction of movement
+      directionNormalized.clone().negate(), // Opposite to movement
+      directionNormalized.clone(), // Direction of movement
       forwardDir,
       forwardDir.clone().negate(),
       rightDir,
@@ -516,7 +586,7 @@ function handlePlayerCollisions() {
       for (const rayDir of rayDirections) {
         const raycaster = new THREE.Raycaster();
         raycaster.set(rayPos, rayDir);
-        raycaster.far = PLAYER_RADIUS * 1.2;  // Check slightly beyond the capsule radius
+        raycaster.far = PLAYER_RADIUS * 1.2; // Check slightly beyond the capsule radius
 
         const intersects = raycaster.intersectObjects(objectMeshes);
 
@@ -548,7 +618,7 @@ function handlePlayerCollisions() {
   if (hasCollision && bestCollisionNormal && bestPenetrationDepth > 0) {
     // Store contact normal regardless of what we do with it
     playerState.lastContactNormal = bestCollisionNormal.clone();
-    
+
     const dotWithUp = bestCollisionNormal.dot(gravityUp);
     const isGroundContact = dotWithUp > 0.5;
 
@@ -558,19 +628,19 @@ function handlePlayerCollisions() {
       playerState.surfaceNormal = bestCollisionNormal.clone();
       playerState.onGround = true;
       playerState.falling = false;
-      
+
       // Set fixed object flag
       playerState.onFixedObject = collisionWithFixed;
-      
+
       // Zero out downward velocity
       const downwardVelocity = gravityUp.clone().negate().multiplyScalar(
         Math.max(0, -playerState.velocity.dot(gravityUp))
       );
-      
+
       if (downwardVelocity.lengthSq() > 0) {
         playerState.velocity.sub(downwardVelocity);
       }
-      
+
       // When not moving on fixed objects, eliminate ALL velocity
       if (collisionWithFixed && !playerState.moveForward && !playerState.moveBackward && 
           !playerState.moveLeft && !playerState.moveRight) {
@@ -953,7 +1023,7 @@ function updatePlayer(deltaTime) {
       // Check if we'd tunnel through any fixed objects
       const ray = new THREE.Raycaster();
       ray.set(previousPosition, movement.clone().normalize());
-      ray.far = movement.length() * 1.1;  // Check slightly beyond movement distance
+      ray.far = movement.length() * 1.1; // Check slightly beyond movement distance
       
       const fixedMeshes = fixedBoxes.map(box => box.mesh);
       const hits = ray.intersectObjects(fixedMeshes);
