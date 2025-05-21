@@ -242,21 +242,23 @@ function createFixedColliderOnSurface(
   const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
   const worldUp = gravityDir.clone().negate();
 
-  const blendedNormal = normal.clone().add(worldUp).normalize();
+  // Use the normal directly without blending with gravity
+  // const blendedNormal = normal.clone().add(worldUp).normalize();
+  const useNormal = normal.clone();
 
   let orientQuaternion;
 
   const worldX = new THREE.Vector3(1, 0, 0);
-  const right = worldX.clone().projectOnPlane(blendedNormal).normalize();
+  const right = worldX.clone().projectOnPlane(useNormal).normalize();
   if (right.lengthSq() < 0.01) {
-    right.set(0, 0, 1).projectOnPlane(blendedNormal).normalize();
+    right.set(0, 0, 1).projectOnPlane(useNormal).normalize();
   }
   const forward = new THREE.Vector3()
-    .crossVectors(right, blendedNormal)
+    .crossVectors(right, useNormal)
     .normalize();
   const rotMatrix = new THREE.Matrix4().makeBasis(
     right,
-    blendedNormal,
+    useNormal,
     forward
   );
   orientQuaternion = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
