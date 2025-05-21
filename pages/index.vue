@@ -1,10 +1,5 @@
 <template>
-  <div class="container">
-    <canvas ref="canvasRef"></canvas>
-    <div class="controls-info">
-      <p>WASD: Move | Q/E: Turn | SPACE: Jump | Push objects with your body</p>
-    </div>
-  </div>
+  <canvas ref="canvasRef"></canvas>
 </template>
 
 <script setup>
@@ -414,6 +409,7 @@ function handlePlayerCollisions() {
   let bestPenetrationDepth = 0;
   let isReorienting = false;
 
+  // Check for collisions with fixed boxes
   for (const box of fixedBoxes) {
     if (!box.body || !box.collider) continue;
 
@@ -453,54 +449,36 @@ function handlePlayerCollisions() {
     }
   }
 
+  // If no collision detected through physics system, use raycasting as fallback
   if (!hasCollision) {
     const capsuleBottomOffset = PLAYER_HEIGHT / 2;
     const feetPosition = playerPosition.clone().add(
-      gravityUp
-        .clone()
-        .negate()
-        .multiplyScalar(capsuleBottomOffset - 0.05)
+      gravityUp.clone().negate().multiplyScalar(capsuleBottomOffset - 0.05)
     );
-
-    const rayDirections = [
-      gravityUp.clone().negate(),
-      gravityUp.clone().negate(),
-      gravityUp.clone().negate(),
-      gravityUp.clone().negate(),
-      gravityUp.clone().negate(),
-    ];
 
     const forwardDir = new THREE.Vector3(1, 0, 0).cross(gravityUp).normalize();
     const rightDir = gravityUp.clone().cross(forwardDir).normalize();
+    
     const rayPositions = [
       feetPosition.clone(),
-      feetPosition
-        .clone()
-        .add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition
-        .clone()
-        .add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition
-        .clone()
-        .sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition
-        .clone()
-        .sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
     ];
 
     let closestHitDistance = Infinity;
-
     const objectMeshes = fixedBoxes.map((box) => box.mesh);
+    const gravDirNeg = gravityUp.clone().negate();
 
     for (let i = 0; i < rayPositions.length; i++) {
       const raycaster = new THREE.Raycaster();
-      raycaster.set(rayPositions[i], rayDirections[i]);
+      raycaster.set(rayPositions[i], gravDirNeg);
 
       const intersects = raycaster.intersectObjects(objectMeshes);
 
       if (intersects.length > 0) {
         const hit = intersects[0];
-
         const hitBox = fixedBoxes.find((box) => box.mesh === hit.object);
         if (!hitBox) continue;
 
@@ -520,6 +498,7 @@ function handlePlayerCollisions() {
     }
   }
 
+  // Handle collision resolution
   if (hasCollision && bestCollisionNormal && bestPenetrationDepth > 0) {
     playerState.lastContactNormal = bestCollisionNormal.clone();
 
@@ -532,44 +511,35 @@ function handlePlayerCollisions() {
       isReorienting = true;
     }
 
-    playerPosition.add(
-      bestCollisionNormal.clone().multiplyScalar(bestPenetrationDepth * 1.01)
+    // Push player out of collision
+    playerPosition.add(bestCollisionNormal.clone().multiplyScalar(bestPenetrationDepth * 1.01));
+
+    // Adjust velocity to reflect off surface
+    const normalVelocity = bestCollisionNormal.clone().multiplyScalar(
+      playerState.velocity.dot(bestCollisionNormal)
     );
 
-    const normalVelocity = bestCollisionNormal
-      .clone()
-      .multiplyScalar(playerState.velocity.dot(bestCollisionNormal));
-
     if (normalVelocity.dot(bestCollisionNormal) < 0) {
-      const tangentialVelocity = playerState.velocity
-        .clone()
-        .sub(normalVelocity);
-
+      const tangentialVelocity = playerState.velocity.clone().sub(normalVelocity);
       const frictionFactor = isGroundContact ? 0.7 : 0.95;
       tangentialVelocity.multiplyScalar(frictionFactor);
-
       playerState.velocity.copy(tangentialVelocity);
     }
   }
 
-  playerBody.setTranslation(
-    {
-      x: playerPosition.x,
-      y: playerPosition.y,
-      z: playerPosition.z,
-    },
-    true
-  );
+  // Update player body position
+  playerBody.setTranslation({
+    x: playerPosition.x,
+    y: playerPosition.y,
+    z: playerPosition.z,
+  }, true);
 
+  // Update orientation if needed
   if (hasCollision && isReorienting && playerState.lastContactNormal) {
-    const surfaceNormal = playerState.lastContactNormal;
-    const position = playerPosition.clone();
-    const onSurface = true;
-
     updatePlayerPositionAndOrientation(
-      position,
-      surfaceNormal,
-      onSurface,
+      playerPosition.clone(),
+      playerState.lastContactNormal,
+      true,
       gravityUp
     );
   }
@@ -583,19 +553,14 @@ function updatePlayerPositionAndOrientation(
 ) {
   if (!position) return;
   if (!surfaceNormal) surfaceNormal = new THREE.Vector3(0, 1, 0);
-  if (!gravityUp) {
-    gravityUp = position.clone().sub(GRAVITY_CENTER).normalize();
-  }
-
-  playerMesh.position.copy(position);
+  if (!gravityUp) gravityUp = position.clone().sub(GRAVITY_CENTER).normalize();
 
   let orientationQuaternion;
-
   const oldFacingDir = playerState.facingDirection.clone();
 
   if (onSurface) {
+    // Create orientation aligned with surface
     const blendedUp = surfaceNormal.clone();
-
     const worldUp = new THREE.Vector3(0, 1, 0);
     let right = new THREE.Vector3().crossVectors(worldUp, blendedUp);
 
@@ -604,78 +569,47 @@ function updatePlayerPositionAndOrientation(
     }
     right.normalize();
 
-    let forward = new THREE.Vector3()
-      .crossVectors(right, blendedUp)
-      .normalize();
+    const forward = new THREE.Vector3().crossVectors(right, blendedUp).normalize();
+    const orientationMatrix = new THREE.Matrix4().makeBasis(right, blendedUp, forward);
+    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
 
-    const orientationMatrix = new THREE.Matrix4().makeBasis(
-      right,
-      blendedUp,
-      forward
-    );
-    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(
-      orientationMatrix
-    );
-
-    playerState.facingDirection = oldFacingDir
-      .clone()
+    // Keep facing direction projected on the surface
+    playerState.facingDirection = oldFacingDir.clone()
       .projectOnPlane(blendedUp)
       .normalize();
   } else {
+    // Create orientation aligned with gravity
     const worldUp = new THREE.Vector3(0, 1, 0);
     let right = new THREE.Vector3().crossVectors(worldUp, gravityUp);
 
     if (right.lengthSq() < 0.01) {
       right = new THREE.Vector3(1, 0, 0);
     }
-
     right.normalize();
-    const forward = new THREE.Vector3()
-      .crossVectors(right, gravityUp)
-      .normalize();
-
-    const orientationMatrix = new THREE.Matrix4().makeBasis(
-      right,
-      gravityUp,
-      forward
-    );
-    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(
-      orientationMatrix
-    );
+    
+    const forward = new THREE.Vector3().crossVectors(right, gravityUp).normalize();
+    const orientationMatrix = new THREE.Matrix4().makeBasis(right, gravityUp, forward);
+    orientationQuaternion = new THREE.Quaternion().setFromRotationMatrix(orientationMatrix);
   }
 
+  // Update visual mesh and physics body once
   playerMesh.position.copy(position);
   playerMesh.quaternion.copy(orientationQuaternion);
 
-  if (playerBody && orientationQuaternion) {
-    playerBody.setTranslation(
-      {
-        x: position.x,
-        y: position.y,
-        z: position.z,
-      },
-      true
-    );
-
-    if (
-      !isNaN(orientationQuaternion.x) &&
-      !isNaN(orientationQuaternion.y) &&
-      !isNaN(orientationQuaternion.z) &&
-      !isNaN(orientationQuaternion.w)
-    ) {
-      playerBody.setRotation(
-        {
-          x: orientationQuaternion.x,
-          y: orientationQuaternion.y,
-          z: orientationQuaternion.z,
-          w: orientationQuaternion.w,
-        },
-        true
-      );
-
-      playerMesh.position.copy(position);
-      playerMesh.quaternion.copy(orientationQuaternion);
-    }
+  if (playerBody && !isNaN(orientationQuaternion.x) && !isNaN(orientationQuaternion.y) &&
+      !isNaN(orientationQuaternion.z) && !isNaN(orientationQuaternion.w)) {
+    playerBody.setTranslation({
+      x: position.x,
+      y: position.y,
+      z: position.z,
+    }, true);
+    
+    playerBody.setRotation({
+      x: orientationQuaternion.x,
+      y: orientationQuaternion.y,
+      z: orientationQuaternion.z,
+      w: orientationQuaternion.w,
+    }, true);
   }
 }
 
@@ -691,58 +625,38 @@ function updatePlayer(deltaTime) {
   const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
   const up = gravityDir.clone().negate();
 
-  const wasOnGround = playerState.onGround;
-
   let onSurface = false;
-
   const wasJumping = playerState.jump && playerState.onGround;
 
   if (wasJumping) {
     playerState.onGround = false;
   }
 
-  const capsuleBottomOffset = PLAYER_HEIGHT / 2;
-  const feetPosition = position
-    .clone()
-    .add(gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.05));
-
-  const perfectGroundDistance = 0;
-  const groundCheckDistance = PLAYER_RADIUS + 0.5;
-
-  const rayDirections = [
-    gravityDir.clone(),
-    gravityDir.clone(),
-    gravityDir.clone(),
-    gravityDir.clone(),
-    gravityDir.clone(),
-  ];
-
-  const forwardDir = new THREE.Vector3(1, 0, 0).cross(up).normalize();
-  const rightDir = up.clone().cross(forwardDir).normalize();
-  const rayPositions = [
-    feetPosition.clone(),
-    feetPosition
-      .clone()
-      .add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-    feetPosition
-      .clone()
-      .add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-    feetPosition
-      .clone()
-      .sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-    feetPosition
-      .clone()
-      .sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-  ];
-
-  const hitPoints = [];
+  // Ground checking with raycasts
   const hitNormals = [];
   let closestHitDistance = Infinity;
 
   if (!wasJumping) {
+    const capsuleBottomOffset = PLAYER_HEIGHT / 2;
+    const feetPosition = position.clone().add(
+      gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.05)
+    );
+    const groundCheckDistance = PLAYER_RADIUS + 0.5;
+
+    const forwardDir = new THREE.Vector3(1, 0, 0).cross(up).normalize();
+    const rightDir = up.clone().cross(forwardDir).normalize();
+    
+    const rayPositions = [
+      feetPosition.clone(),
+      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+    ];
+
     for (let i = 0; i < rayPositions.length; i++) {
       const raycaster = new THREE.Raycaster();
-      raycaster.set(rayPositions[i], rayDirections[i]);
+      raycaster.set(rayPositions[i], gravityDir);
       const intersects = raycaster.intersectObject(terrain);
 
       if (intersects.length > 0) {
@@ -753,7 +667,6 @@ function updatePlayer(deltaTime) {
         normal.applyMatrix3(normalMatrix).normalize();
 
         hitNormals.push(normal);
-        hitPoints.push(intersects[0].point);
 
         if (intersects[0].distance < closestHitDistance) {
           closestHitDistance = intersects[0].distance;
@@ -767,6 +680,7 @@ function updatePlayer(deltaTime) {
     }
   }
 
+  // Determine surface normal and ground status
   let surfaceNormal = up.clone();
   if (hitNormals.length > 0) {
     surfaceNormal = new THREE.Vector3();
@@ -775,66 +689,56 @@ function updatePlayer(deltaTime) {
     }
     surfaceNormal.divideScalar(hitNormals.length).normalize();
 
+    const groundCheckDistance = PLAYER_RADIUS + 0.5;
     if (closestHitDistance < groundCheckDistance) {
       onSurface = true;
       playerState.onGround = true;
 
-      const normalVelocity = playerState.velocity
-        .clone()
-        .projectOnVector(surfaceNormal);
+      // Project velocity onto surface
+      const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
       if (normalVelocity.dot(surfaceNormal) < 0) {
         playerState.velocity.sub(normalVelocity);
       }
     } else {
       playerState.onGround = false;
     }
+  } else if (playerState.lastContactNormal && playerState.onGround) {
+    // Use last known contact normal if we still consider ourselves grounded
+    surfaceNormal = playerState.lastContactNormal.clone();
+    onSurface = true;
   } else {
-    if (playerState.lastContactNormal && playerState.onGround) {
-      surfaceNormal = playerState.lastContactNormal.clone();
-      onSurface = true;
-    } else {
-      const distToCenter = position.distanceTo(GRAVITY_CENTER);
-      const minDistance =
-        PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT / 2;
+    // Check if we're inside the planet and push out if needed
+    const distToCenter = position.distanceTo(GRAVITY_CENTER);
+    const minDistance = PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT / 2;
 
-      if (distToCenter < minDistance) {
-        position.copy(up.clone().multiplyScalar(minDistance));
-        playerState.onGround = true;
-        playerState.velocity.projectOnPlane(up);
-      } else {
-        playerState.onGround = false;
-      }
+    if (distToCenter < minDistance) {
+      position.copy(up.clone().multiplyScalar(minDistance));
+      playerState.onGround = true;
+      playerState.velocity.projectOnPlane(up);
+    } else {
+      playerState.onGround = false;
     }
   }
 
+  // Apply gravity if not on ground
   if (!playerState.onGround) {
-    const gravity = gravityDir
-      .clone()
-      .multiplyScalar(GRAVITY_STRENGTH * deltaTime);
-    playerState.velocity.add(gravity);
+    playerState.velocity.add(gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime));
   }
 
-  if (playerState.turnLeft) {
+  // Handle turning
+  if (playerState.turnLeft || playerState.turnRight) {
+    const turnDir = playerState.turnLeft ? 1 : -1;
     const upAxis = position.clone().sub(GRAVITY_CENTER).normalize();
     const rotationMatrix = new THREE.Matrix4().makeRotationAxis(
       upAxis,
-      TURN_SPEED * deltaTime
+      TURN_SPEED * deltaTime * turnDir
     );
     playerState.facingDirection.applyMatrix4(rotationMatrix);
-  }
-  if (playerState.turnRight) {
-    const upAxis = position.clone().sub(GRAVITY_CENTER).normalize();
-    const rotationMatrix = new THREE.Matrix4().makeRotationAxis(
-      upAxis,
-      -TURN_SPEED * deltaTime
-    );
-    playerState.facingDirection.applyMatrix4(rotationMatrix);
+    playerState.facingDirection.normalize();
   }
 
-  playerState.facingDirection.normalize();
-
-  const surfaceAlignedFacing = playerState.facingDirection
-    .clone()
+  // Calculate movement direction based on inputs
+  const surfaceAlignedFacing = playerState.facingDirection.clone()
     .projectOnPlane(surfaceNormal)
     .normalize();
 
@@ -848,87 +752,87 @@ function updatePlayer(deltaTime) {
   if (playerState.moveRight) playerState.direction.add(right);
   if (playerState.moveLeft) playerState.direction.sub(right);
 
-  const isMoving =
-    playerState.moveForward ||
-    playerState.moveBackward ||
-    playerState.moveLeft ||
-    playerState.moveRight;
+  const isMoving = playerState.moveForward || playerState.moveBackward || 
+                  playerState.moveLeft || playerState.moveRight;
 
+  // Apply movement if there is input
   if (playerState.direction.lengthSq() > 0) {
     const slopeAngle = Math.acos(Math.min(1, Math.abs(surfaceNormal.dot(up))));
-
     let moveSpeedMultiplier = 1.0;
 
+    // Handle steep slopes
     if (slopeAngle > MAX_CLIMBABLE_SLOPE && playerState.onGround) {
       const upComponent = playerState.direction.dot(surfaceNormal);
-
+      
       if (upComponent > 0) {
-        const steepnessFactor =
-          (slopeAngle - MAX_CLIMBABLE_SLOPE) /
-          (Math.PI / 2 - MAX_CLIMBABLE_SLOPE);
-
+        const steepnessFactor = (slopeAngle - MAX_CLIMBABLE_SLOPE) / 
+                               (Math.PI / 2 - MAX_CLIMBABLE_SLOPE);
         moveSpeedMultiplier = Math.max(0, 1 - steepnessFactor * 1.5);
-
+        
         if (slopeAngle >= Math.PI / 2) {
           moveSpeedMultiplier = 0;
         }
       }
     }
 
-    playerState.direction
-      .normalize()
+    playerState.direction.normalize()
       .multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
 
-    if (
-      playerState.lastContactNormal &&
-      playerState.onGround &&
-      hitNormals.length === 0
-    ) {
+    // Add movement to position
+    if (playerState.lastContactNormal && playerState.onGround && hitNormals.length === 0) {
       const contactNormal = playerState.lastContactNormal;
-      const projectedDirection = playerState.direction
-        .clone()
-        .projectOnPlane(contactNormal);
+      const projectedDirection = playerState.direction.clone().projectOnPlane(contactNormal);
       position.add(projectedDirection);
     } else {
       position.add(playerState.direction);
     }
   }
 
+  // Handle jumping
   if (wasJumping) {
-    console.log("Applying jump force!");
-
     const jumpDirection = new THREE.Vector3();
-
+    
+    // Add some forward momentum to the jump
     jumpDirection.add(surfaceAlignedFacing.clone().multiplyScalar(1.5));
-
+    
+    // Add upward force
     jumpDirection.add(surfaceNormal.clone().multiplyScalar(3.0));
-
+    
+    // Normalize and scale by jump force
     jumpDirection.normalize().multiplyScalar(JUMP_FORCE);
-
+    
+    // Add a little lift to avoid getting stuck
     position.add(surfaceNormal.clone().multiplyScalar(0.3));
-
+    
+    // Set velocity to jump direction
     playerState.velocity = jumpDirection.clone();
-
+    
     playerState.onGround = false;
     playerState.jump = false;
   }
 
+  // Apply friction when on ground
   if (playerState.onGround) {
     if (!isMoving) {
+      // Higher friction when not moving
       playerState.velocity.multiplyScalar(0.05);
-
+      
       if (playerState.velocity.lengthSq() < 0.03) {
         playerState.velocity.set(0, 0, 0);
       }
     } else {
+      // Some friction when moving
       playerState.velocity.multiplyScalar(0.8);
     }
-
+    
+    // Project velocity onto surface
     playerState.velocity = playerState.velocity.projectOnPlane(surfaceNormal);
   }
 
+  // Apply velocity to position
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
 
+  // Update player position and orientation
   updatePlayerPositionAndOrientation(
     position,
     surfaceNormal || up.clone(),
@@ -936,6 +840,7 @@ function updatePlayer(deltaTime) {
     up
   );
 
+  // Handle collisions after movement
   handlePlayerCollisions();
 }
 
