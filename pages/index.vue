@@ -1179,12 +1179,25 @@ onMounted(async () => {
   scene.background = new THREE.Color(0x87ceeb);
 
   camera = new THREE.PerspectiveCamera(
-    75,
+    60, // Slightly wider field of view
     window.innerWidth / window.innerHeight,
     0.1,
     1000
   );
-  camera.position.set(0, PLANET_RADIUS * 1.5, PLANET_RADIUS);
+  
+  // Define the spawn position for reference
+  const spawnPosition = new THREE.Vector3(
+    0,
+    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + SPAWN_HEIGHT,
+    0
+  );
+  
+  // Position camera to look at the spawn point from a distance
+  camera.position.set(
+    spawnPosition.x + 30, 
+    spawnPosition.y + 20, 
+    spawnPosition.z + 30
+  );
 
   renderer = new THREE.WebGLRenderer({
     canvas: canvasRef.value,
@@ -1194,7 +1207,8 @@ onMounted(async () => {
   renderer.setPixelRatio(window.devicePixelRatio);
 
   controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, PLANET_RADIUS, 0);
+  // Set orbit controls to target the spawn position
+  controls.target.copy(spawnPosition);
   controls.update();
 
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
