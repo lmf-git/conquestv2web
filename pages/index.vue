@@ -712,88 +712,63 @@ function updatePlayer(deltaTime) {
   // Skip terrain ground checking if we're already on a fixed object
   // This prevents normal conflicts between terrain and fixed objects
   if (!playerState.onFixedObject && !wasJumping) {
-    // Ground checking with raycasts for terrain only
+    // Simplify to use just one ray for ground detection
     hitNormals = [];
     closestHitDistance = Infinity;
 
     const capsuleBottomOffset = PLAYER_HEIGHT / 2;
-    // Use the updated ground check parameters
+    // Use a single ray cast from the feet position
     const feetPosition = position.clone().add(
-      gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.8)
+      gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.1)
     );
     const groundCheckDistance = PLAYER_RADIUS + 0.8;
 
-    const forwardDir = playerState.facingDirection.clone().projectOnPlane(up).normalize();
-    const rightDir = up.clone().cross(forwardDir).normalize();
-    
-    // More comprehensive ray pattern that includes backward direction
-    const rayPositions = [
-      feetPosition.clone(), // Center
-      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward
-      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Right
-      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward
-      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Left
-      // Add diagonal rays for more comprehensive coverage
-      feetPosition.clone().add(forwardDir.clone().add(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward-Right
-      feetPosition.clone().add(forwardDir.clone().sub(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward-Left
-      feetPosition.clone().sub(forwardDir.clone().add(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward-Left
-      feetPosition.clone().sub(forwardDir.clone().sub(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward-Right
-    ];
+    // Cast a single ray directly down
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(feetPosition, gravityDir);
+    raycaster.far = groundCheckDistance * 2;
+    const intersects = raycaster.intersectObject(terrain);
 
-    // Use consistent ray distances for all directions
-    for (let i = 0; i < rayPositions.length; i++) {
-      const raycaster = new THREE.Raycaster();
-      raycaster.set(rayPositions[i], gravityDir);
-      raycaster.far = groundCheckDistance * 2; // Increase ray length for consistent checking
-      const intersects = raycaster.intersectObject(terrain);
+    if (intersects.length > 0) {
+      const normal = intersects[0].face.normal.clone();
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(
+        terrain.matrixWorld
+      );
+      normal.applyMatrix3(normalMatrix).normalize();
 
-      if (intersects.length > 0) {
-        const normal = intersects[0].face.normal.clone();
-        const normalMatrix = new THREE.Matrix3().getNormalMatrix(
-          terrain.matrixWorld
-        );
-        normal.applyMatrix3(normalMatrix).normalize();
+      hitNormals.push(normal);
+      closestHitDistance = intersects[0].distance;
 
-        hitNormals.push(normal);
-
-        if (intersects[0].distance < closestHitDistance) {
-          closestHitDistance = intersects[0].distance;
-        }
-
-        // Consider all rays for ground detection, not just the center one
-        if (intersects[0].distance < groundCheckDistance) {
-          onSurface = true;
-          playerState.onGround = true;
-        }
-      }
-    }
-
-    // Determine surface normal and ground status
-    let surfaceNormal = up.clone();
-    if (hitNormals.length > 0) {
-      surfaceNormal = new THREE.Vector3();
-      for (const normal of hitNormals) {
-        surfaceNormal.add(normal);
-      }
-      surfaceNormal.divideScalar(hitNormals.length).normalize();
-
-      // Use the consistent groundCheckDistance here too
+      // Determine if we're on ground based on the single ray
       if (closestHitDistance < groundCheckDistance) {
         onSurface = true;
         playerState.onGround = true;
+        playerState.falling = false;
 
         // Project velocity onto surface
-        const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
-        if (normalVelocity.dot(surfaceNormal) < 0) {
+        const normalVelocity = playerState.velocity.clone().projectOnVector(normal);
+        if (normalVelocity.dot(normal) < 0) {
           playerState.velocity.sub(normalVelocity);
         }
       } else {
         playerState.onGround = false;
+        playerState.falling = playerState.velocity.dot(gravityDir) > 0;
       }
+    } else {
+      // No ray hit - we're not on ground
+      playerState.onGround = false;
+      playerState.falling = true;
+    }
+
+    // Determine surface normal from the hit normal or use up vector
+    let surfaceNormal = up.clone();
+    if (hitNormals.length > 0) {
+      surfaceNormal = hitNormals[0].clone(); // Just use the one normal we got
     } else if (playerState.lastContactNormal && playerState.onGround) {
       // Use last known contact normal if we still consider ourselves grounded
       surfaceNormal = playerState.lastContactNormal.clone();
       onSurface = true;
+      playerState.falling = false;
     } else {
       // Check if we're inside the planet and push out if needed
       const distToCenter = position.distanceTo(GRAVITY_CENTER);
@@ -802,9 +777,11 @@ function updatePlayer(deltaTime) {
       if (distToCenter < minDistance) {
         position.copy(up.clone().multiplyScalar(minDistance));
         playerState.onGround = true;
+        playerState.falling = false;
         playerState.velocity.projectOnPlane(up);
       } else {
         playerState.onGround = false;
+        playerState.falling = true;
       }
     }
 
