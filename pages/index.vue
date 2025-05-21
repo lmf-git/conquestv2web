@@ -550,13 +550,16 @@ function handlePlayerCollisions() {
 
   // Handle collision resolution with improved logic
   if (hasCollision && bestCollisionNormal && bestPenetrationDepth > 0) {
+    // Store contact normal regardless of what we do with it
     playerState.lastContactNormal = bestCollisionNormal.clone();
-    playerState.surfaceNormal = bestCollisionNormal.clone();
-
+    
     const dotWithUp = bestCollisionNormal.dot(gravityUp);
     const isGroundContact = dotWithUp > 0.5;
 
+    // Only update surface normal when we're actually on a surface (ground contact)
+    // otherwise just use it for deflection but don't change orientation
     if (isGroundContact) {
+      playerState.surfaceNormal = bestCollisionNormal.clone();
       playerState.onGround = true;
       playerState.falling = false;
       isReorienting = true;
@@ -578,6 +581,9 @@ function handlePlayerCollisions() {
           !playerState.moveLeft && !playerState.moveRight) {
         playerState.velocity.set(0, 0, 0);
       }
+    } else {
+      // For side collisions, we don't want to change orientation
+      // Just deflect the velocity and push out
     }
 
     // More aggressive push out of collision with objects
@@ -611,11 +617,11 @@ function handlePlayerCollisions() {
     z: playerPosition.z,
   }, true);
 
-  // Update orientation if needed
-  if (hasCollision && isReorienting && playerState.lastContactNormal) {
+  // Update orientation ONLY if we need to reorient (ground contact)
+  if (hasCollision && isReorienting && playerState.surfaceNormal) {
     updatePlayerPositionAndOrientation(
       playerPosition.clone(),
-      playerState.lastContactNormal,
+      playerState.surfaceNormal,
       true,
       gravityUp
     );
@@ -824,8 +830,9 @@ function updatePlayer(deltaTime) {
   }
 
   // Use appropriate normal based on what contact we have
-  const surfaceNormal = playerState.onFixedObject && playerState.lastContactNormal 
-    ? playerState.lastContactNormal.clone()
+  // Only use lastContactNormal if it's actually a ground contact
+  const surfaceNormal = playerState.onFixedObject && playerState.surfaceNormal 
+    ? playerState.surfaceNormal.clone()
     : (playerState.surfaceNormal || up.clone());
 
   // Apply gravity if not on ground
