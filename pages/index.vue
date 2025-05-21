@@ -1085,6 +1085,91 @@ function createSpawnPlatform() {
   if (platformObj) {
     fixedBoxes.push(platformObj);
     console.log("Created spawn platform");
+    
+    // Add a ramp (stair-like structure) from the platform to the ground
+    
+    // Calculate the position of the ramp - put it at the north edge of the platform
+    const northVector = new THREE.Vector3(0, 0, -1); // Assuming Z- is north
+    const worldX = new THREE.Vector3(1, 0, 0);
+    const right = worldX.clone().projectOnPlane(worldUp).normalize();
+    const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
+    
+    // Move 5 units along the forward vector (half of platform size)
+    const rampStartPos = spawnPosition.clone().add(forward.clone().multiplyScalar(5));
+    
+    // Calculate length and slope of the ramp
+    const rampLength = 15; // Length of the ramp
+    const rampHeight = 5;  // Height difference from top to bottom
+    const rampWidth = 4;   // Width of the ramp
+    
+    // Move down along gravity half the ramp height to center the ramp
+    rampStartPos.add(gravityDir.clone().multiplyScalar(rampHeight/2));
+    
+    // Move forward half the ramp length to center the ramp
+    rampStartPos.add(forward.clone().multiplyScalar(rampLength/2));
+    
+    // Create a rotated box for the ramp
+    // Calculate the angle needed to tilt the ramp in the gravitational field
+    const tiltAngle = Math.atan2(rampHeight, rampLength);
+    
+    // Build a rotation quaternion to tilt the ramp around the right axis
+    const rampRotation = new THREE.Quaternion().setFromAxisAngle(right, tiltAngle);
+    
+    // Combine with the world-up orientation
+    const rampUp = worldUp.clone().applyQuaternion(rampRotation);
+    const rampMatrix = new THREE.Matrix4().makeBasis(
+      right,
+      rampUp,
+      new THREE.Vector3().crossVectors(right, rampUp).normalize()
+    );
+    const rampQuaternion = new THREE.Quaternion().setFromRotationMatrix(rampMatrix);
+    
+    // Create the ramp object
+    const rampSize = new THREE.Vector3(rampWidth, 0.5, rampLength); // Width, height, length
+    
+    // Create a custom fixed collider for the ramp
+    const rampBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(rampStartPos.x, rampStartPos.y, rampStartPos.z)
+      .setRotation({
+        x: rampQuaternion.x,
+        y: rampQuaternion.y,
+        z: rampQuaternion.z,
+        w: rampQuaternion.w,
+      });
+    
+    const rampBody = world.createRigidBody(rampBodyDesc);
+    
+    const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
+      rampSize.x / 2,
+      rampSize.y / 2,
+      rampSize.z / 2
+    );
+    rampColliderDesc.setCollisionGroups(0x00010001);
+    
+    const rampCollider = world.createCollider(rampColliderDesc, rampBody);
+    
+    // Create visual mesh for the ramp
+    const rampGeometry = new THREE.BoxGeometry(rampSize.x, rampSize.y, rampSize.z);
+    const rampMaterial = new THREE.MeshStandardMaterial({
+      color: 0x1188ff, // Slightly different blue than the platform
+      roughness: 0.6,
+    });
+    
+    const rampMesh = new THREE.Mesh(rampGeometry, rampMaterial);
+    rampMesh.position.copy(rampStartPos);
+    rampMesh.quaternion.copy(rampQuaternion);
+    rampMesh.castShadow = true;
+    rampMesh.receiveShadow = true;
+    scene.add(rampMesh);
+    
+    // Add the ramp to fixed boxes for collision
+    fixedBoxes.push({
+      body: rampBody,
+      collider: rampCollider,
+      mesh: rampMesh,
+    });
+    
+    console.log("Created ramp for spawn platform");
   }
 }
 
