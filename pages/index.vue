@@ -23,9 +23,6 @@ let terrain, playerMesh, playerCollider;
 let world, playerBody;
 let physicsInitialized = false;
 
-// Add a variable to track collider initialization 
-let collidersInitialized = false;
-
 // Arrays to store colliders and their mesh representations
 let fixedBoxes = [];
 let dynamicObjects = [];
@@ -55,22 +52,11 @@ const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 5;
 const JUMP_FORCE = 18; // Increased jump force from 12 to 18 for a much stronger jump
 const PLANET_RADIUS = 50;
-const TERRAIN_DETAIL = 64; // Resolution of the sphere
 const TERRAIN_HEIGHT_SCALE = 50; // How much the terrain varies in height
 const TURN_SPEED = 2; // How fast the player rotates
-// Adjust this to reduce the gap
-const GROUND_OFFSET = 0; // Make GROUND_OFFSET exactly zero to completely eliminate the gap
-// Add a small "sink" value to push player slightly into the terrain (visually imperceptible)
-const TERRAIN_SINK = 0.02; // This makes the capsule sink slightly into the terrain to eliminate any gap
-const ORIENTATION_SMOOTHING = 0.9; // Higher value = smoother but slower orientation changes
-const MAX_SLOPE_CLIMB_ANGLE = Math.PI / 4; // Maximum slope the player can climb (45 degrees)
-// Add slope constants for movement limitations but not visual orientation
 const MAX_CLIMBABLE_SLOPE = Math.PI / 5; // Maximum slope angle the player can climb (36 degrees)
-const NUM_FIXED_BOXES = 5; // Number of fixed box colliders
 const NUM_DYNAMIC_OBJECTS = 10; // Number of dynamic objects to create
-const BOX_SIZE = 2; // Size of fixed boxes
 const DYNAMIC_OBJECT_SIZE = 1; // Size of dynamic objects
-const DYNAMIC_OBJECT_MASS = 1; // Mass of dynamic objects
 
 // Generate spherical terrain vertices with height variations
 function generateSphericalTerrain() {
@@ -151,65 +137,6 @@ function createTrimeshCollider(geometry) {
   
   // Create trimesh collider description
   return RAPIER.ColliderDesc.trimesh(vertices, indices);
-}
-
-// Create a fixed box collider with a visual mesh
-function createFixedBox(position, size) {
-  // Create the collider
-  const boxColliderDesc = RAPIER.ColliderDesc.cuboid(
-    size.x / 2, size.y / 2, size.z / 2
-  );
-  
-  // Adjust the collision groups for user-controlled detection
-  boxColliderDesc.setCollisionGroups(0x00010001); // Group 1, can collide with Group 1
-  
-  // Calculate position based on gravity direction at that point
-  const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
-  const worldUp = gravityDir.clone().negate();
-  
-  // Create quaternion to orient box with gravity direction
-  const worldX = new THREE.Vector3(1, 0, 0);
-  const right = worldX.clone().projectOnPlane(worldUp).normalize();
-  if (right.lengthSq() < 0.01) {
-    right.set(0, 0, 1);
-  }
-  const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
-  const rotMatrix = new THREE.Matrix4().makeBasis(right, worldUp, forward);
-  const orientation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
-  
-  // Create a rigid body description
-  const rigidBodyDesc = RAPIER.RigidBodyDesc.fixed()
-    .setTranslation(position.x, position.y, position.z)
-    .setRotation({
-      x: orientation.x,
-      y: orientation.y,
-      z: orientation.z,
-      w: orientation.w
-    });
-  
-  // Create the rigid body and collider
-  const boxBody = world.createRigidBody(rigidBodyDesc);
-  const boxCollider = world.createCollider(boxColliderDesc, boxBody);
-  
-  // Create a visual representation in Three.js
-  const boxGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
-  const boxMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0x8844aa,
-    roughness: 0.7
-  });
-  const boxMesh = new THREE.Mesh(boxGeometry, boxMaterial);
-  boxMesh.position.copy(position);
-  boxMesh.quaternion.copy(orientation);
-  boxMesh.castShadow = true;
-  boxMesh.receiveShadow = true;
-  scene.add(boxMesh);
-  
-  // Return both the physics body and the mesh
-  return {
-    body: boxBody,
-    collider: boxCollider,
-    mesh: boxMesh
-  };
 }
 
 // Create a dynamic physics object with visual representation
@@ -1071,17 +998,6 @@ function updateDynamicObjects() {
   }
 }
 
-// Set up collider materials with a simple, direct approach
-function initDynamicObjectCollisions() {
-  for (const obj of dynamicObjects) {
-    if (obj.collider) {
-      // Directly set properties on the collider - no fallbacks or alternatives
-      obj.collider.setRestitution(0.1);
-      obj.collider.setFriction(0.9);
-    }
-  }
-}
-
 // Apply point gravity and handle movement
 function updatePlayer(deltaTime) {
   if (!physicsInitialized) return;
@@ -1384,17 +1300,7 @@ function animate() {
     updatePlayer(deltaTime);
     updateDynamicObjects();
     
-    // Execute collision configuration once after objects are created
-    if (dynamicObjects.length > 0 && !collidersInitialized) {
-      initDynamicObjectCollisions();
-      collidersInitialized = true;
-    }
-    
     world.step();
-    
-    // Uncomment to add debug visualization
-    // const position = new THREE.Vector3(playerBody.translation().x, playerBody.translation().y, playerBody.translation().z);
-    // debugDrawGroundContact(position, up);
   }
   
   // Render scene
@@ -1402,24 +1308,6 @@ function animate() {
   
   requestAnimationFrame(animate);
 }
-
-// After updating player and physics, add a small debug function to visualize the contact point
-// This can help identify any remaining gaps (can be removed in production)
-function debugDrawGroundContact(position, surfaceNormal) {
-  if (!playerState.onGround) return;
-  
-  // Calculate the exact bottom point of the capsule
-  const up = position.clone().sub(GRAVITY_CENTER).normalize();
-  const bottomPosition = position.clone().add(up.clone().negate().multiplyScalar(PLAYER_HEIGHT/2 - PLAYER_RADIUS));
-  
-  // Project slightly down to where ground should be
-  const groundPosition = bottomPosition.clone().add(up.clone().negate().multiplyScalar(PLAYER_RADIUS + GROUND_OFFSET));
-  
-  // Draw a debug point (you would need to implement this with a small sphere or marker)
-  // This is just a pseudo-code example
-  // drawDebugPoint(groundPosition, 0xff0000); // Red marker at exact ground contact point
-}
-
 // Lifecycle hooks
 onMounted(async () => {
   await initPhysics();
