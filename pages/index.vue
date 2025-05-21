@@ -139,82 +139,6 @@ function createTrimeshCollider(geometry) {
   return RAPIER.ColliderDesc.trimesh(vertices, indices);
 }
 
-// Create a dynamic physics object with visual representation
-function createDynamicObject(position, size, isSphere = false) {
-  // Create the appropriate collider description based on shape
-  let colliderDesc;
-  
-  if (isSphere) {
-    colliderDesc = RAPIER.ColliderDesc.ball(size / 2);
-  } else {
-    colliderDesc = RAPIER.ColliderDesc.cuboid(size / 2, size / 2, size / 2);
-  }
-  
-  // Set material properties for the collider
-  colliderDesc.setRestitution(0.4); // Bounciness
-  colliderDesc.setFriction(0.8);    // Friction
-  colliderDesc.setDensity(1.0);     // Add density for better mass properties
-  
-  // Calculate gravity direction for initial orientation
-  const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
-  const worldUp = gravityDir.clone().negate();
-  
-  // Create quaternion to orient object with gravity
-  const worldX = new THREE.Vector3(1, 0, 0);
-  const right = worldX.clone().projectOnPlane(worldUp).normalize();
-  if (right.lengthSq() < 0.01) {
-    right.set(0, 0, 1);
-  }
-  const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
-  const rotMatrix = new THREE.Matrix4().makeBasis(right, worldUp, forward);
-  const orientation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
-  
-  // Create rigid body description
-  const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(position.x, position.y, position.z)
-    .setRotation({
-      x: orientation.x,
-      y: orientation.y, 
-      z: orientation.z,
-      w: orientation.w
-    })
-    // Add some linear damping to prevent excessive bouncing
-    .setLinearDamping(0.2)
-    .setAngularDamping(0.3);
-  
-  // Create the rigid body and collider
-  const dynamicBody = world.createRigidBody(rigidBodyDesc);
-  const dynamicCollider = world.createCollider(colliderDesc, dynamicBody);
-  
-  // Create the appropriate visual geometry
-  let geometry;
-  if (isSphere) {
-    geometry = new THREE.SphereGeometry(size / 2, 16, 16);
-  } else {
-    geometry = new THREE.BoxGeometry(size, size, size);
-  }
-  
-  // Random color for variety
-  const hue = Math.random();
-  const material = new THREE.MeshStandardMaterial({ 
-    color: new THREE.Color().setHSL(hue, 0.7, 0.5),
-    roughness: 0.5
-  });
-  
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-  
-  // Return the object data
-  return {
-    body: dynamicBody,
-    collider: dynamicCollider,
-    mesh: mesh,
-    isSphere: isSphere
-  };
-}
-
 // Initialize physics (keep this first instance)
 async function initPhysics() {
   await RAPIER.init();
@@ -317,28 +241,8 @@ function initThree() {
   playerMesh.castShadow = true;
   scene.add(playerMesh);
   
-  // Set initial player position high above terrain
-  const spawnHeight = 20;
-  const initialPosition = new THREE.Vector3(
-    0, 
-    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + PLAYER_HEIGHT/2 + spawnHeight,
-    0
-  );
   
-  // Use the gravity direction as initial surface normal and up vector
-  const initialGravityUp = initialPosition.clone().sub(GRAVITY_CENTER).normalize();
-  
-  // Call with all required parameters
-  updatePlayerPositionAndOrientation(
-    initialPosition, 
-    initialGravityUp, 
-    false, // not on surface initially
-    initialGravityUp
-  );
-  
-  // Reset player velocity to ensure clean falling
-  playerState.velocity.set(0, 0, 0);
-  
+
   // Add event listeners
   window.addEventListener('resize', onWindowResize);
   window.addEventListener('keydown', onKeyDown);
@@ -641,7 +545,6 @@ function createFixedColliderOnSurface(position, normal, size, color, shape = 'bo
   };
 }
 
-
 // Event handlers
 function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -932,69 +835,6 @@ function updatePlayerPositionAndOrientation(position, surfaceNormal, onSurface, 
       playerMesh.position.copy(position);
       playerMesh.quaternion.copy(orientationQuaternion);
     }
-  }
-}
-
-// Update dynamic objects based on gravity
-function updateDynamicObjects() {
-  // Update each dynamic object
-  for (const obj of dynamicObjects) {
-    // Get object position
-    const position = new THREE.Vector3(
-      obj.body.translation().x,
-      obj.body.translation().y,
-      obj.body.translation().z
-    );
-    
-    // Calculate gravity direction towards planet center
-    const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
-    
-    // Check if the body is dynamic
-    if (obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) {
-      // Use a fixed mass value - simpler approach
-      const mass = obj.isSphere ? 1 : 2;
-      
-      // Calculate gravity force scaled for impulse application
-      const gravityImpulse = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * mass * 0.016);
-      
-      // Apply impulse directly
-      obj.body.applyImpulse(
-        { x: gravityImpulse.x, y: gravityImpulse.y, z: gravityImpulse.z },
-        true
-      );
-      
-      // For non-spheres, align with gravity
-      if (!obj.isSphere) {
-        const worldUp = gravityDir.clone().negate();
-        const objQuat = obj.mesh.quaternion;
-        const objUp = new THREE.Vector3(0, 1, 0).applyQuaternion(objQuat);
-        const alignmentTorque = new THREE.Vector3().crossVectors(objUp, worldUp);
-        
-        if (alignmentTorque.lengthSq() > 0.01) {
-          const strength = 0.1 * objUp.angleTo(worldUp);
-          alignmentTorque.normalize().multiplyScalar(strength);
-          
-          obj.body.applyTorqueImpulse(
-            { x: alignmentTorque.x, y: alignmentTorque.y, z: alignmentTorque.z },
-            true
-          );
-        }
-      }
-    }
-    
-    // Update visual representation to match physics
-    obj.mesh.position.set(
-      obj.body.translation().x,
-      obj.body.translation().y,
-      obj.body.translation().z
-    );
-    
-    obj.mesh.quaternion.set(
-      obj.body.rotation().x,
-      obj.body.rotation().y,
-      obj.body.rotation().z,
-      obj.body.rotation().w
-    );
   }
 }
 
@@ -1325,6 +1165,144 @@ onBeforeUnmount(() => {
     renderer.dispose();
   }
 });
+
+// Create a dynamic physics object with visual representation
+function createDynamicObject(position, size, isSphere = false) {
+  // Create the appropriate collider description based on shape
+  let colliderDesc;
+  
+  if (isSphere) {
+    colliderDesc = RAPIER.ColliderDesc.ball(size / 2);
+  } else {
+    colliderDesc = RAPIER.ColliderDesc.cuboid(size / 2, size / 2, size / 2);
+  }
+  
+  // Set material properties for the collider
+  colliderDesc.setRestitution(0.4); // Bounciness
+  colliderDesc.setFriction(0.8);    // Friction
+  colliderDesc.setDensity(1.0);     // Add density for better mass properties
+  
+  // Calculate gravity direction for initial orientation
+  const gravityDir = position.clone().sub(GRAVITY_CENTER).normalize();
+  const worldUp = gravityDir.clone().negate();
+  
+  // Create quaternion to orient object with gravity
+  const worldX = new THREE.Vector3(1, 0, 0);
+  const right = worldX.clone().projectOnPlane(worldUp).normalize();
+  if (right.lengthSq() < 0.01) {
+    right.set(0, 0, 1);
+  }
+  const forward = new THREE.Vector3().crossVectors(right, worldUp).normalize();
+  const rotMatrix = new THREE.Matrix4().makeBasis(right, worldUp, forward);
+  const orientation = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+  
+  // Create rigid body description
+  const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(position.x, position.y, position.z)
+    .setRotation({
+      x: orientation.x,
+      y: orientation.y, 
+      z: orientation.z,
+      w: orientation.w
+    })
+    // Add some linear damping to prevent excessive bouncing
+    .setLinearDamping(0.2)
+    .setAngularDamping(0.3);
+  
+  // Create the rigid body and collider
+  const dynamicBody = world.createRigidBody(rigidBodyDesc);
+  const dynamicCollider = world.createCollider(colliderDesc, dynamicBody);
+  
+  // Create the appropriate visual geometry
+  let geometry;
+  if (isSphere) {
+    geometry = new THREE.SphereGeometry(size / 2, 16, 16);
+  } else {
+    geometry = new THREE.BoxGeometry(size, size, size);
+  }
+  
+  // Random color for variety
+  const hue = Math.random();
+  const material = new THREE.MeshStandardMaterial({ 
+    color: new THREE.Color().setHSL(hue, 0.7, 0.5),
+    roughness: 0.5
+  });
+  
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  
+  // Return the object data
+  return {
+    body: dynamicBody,
+    collider: dynamicCollider,
+    mesh: mesh,
+    isSphere: isSphere
+  };
+}
+
+function updateDynamicObjects() {
+  // Update each dynamic object
+  for (const obj of dynamicObjects) {
+    // Get object position
+    const position = new THREE.Vector3(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+    
+    // Calculate gravity direction towards planet center
+    const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
+    
+    // Check if the body is dynamic
+    if (obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) {
+      // Use a fixed mass value - simpler approach
+      const mass = obj.isSphere ? 1 : 2;
+      
+      // Calculate gravity force scaled for impulse application
+      const gravityImpulse = gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * mass * 0.016);
+      
+      // Apply impulse directly
+      obj.body.applyImpulse(
+        { x: gravityImpulse.x, y: gravityImpulse.y, z: gravityImpulse.z },
+        true
+      );
+      
+      // For non-spheres, align with gravity
+      if (!obj.isSphere) {
+        const worldUp = gravityDir.clone().negate();
+        const objQuat = obj.mesh.quaternion;
+        const objUp = new THREE.Vector3(0, 1, 0).applyQuaternion(objQuat);
+        const alignmentTorque = new THREE.Vector3().crossVectors(objUp, worldUp);
+        
+        if (alignmentTorque.lengthSq() > 0.01) {
+          const strength = 0.1 * objUp.angleTo(worldUp);
+          alignmentTorque.normalize().multiplyScalar(strength);
+          
+          obj.body.applyTorqueImpulse(
+            { x: alignmentTorque.x, y: alignmentTorque.y, z: alignmentTorque.z },
+            true
+          );
+        }
+      }
+    }
+    
+    // Update visual representation to match physics
+    obj.mesh.position.set(
+      obj.body.translation().x,
+      obj.body.translation().y,
+      obj.body.translation().z
+    );
+    
+    obj.mesh.quaternion.set(
+      obj.body.rotation().x,
+      obj.body.rotation().y,
+      obj.body.rotation().z,
+      obj.body.rotation().w
+    );
+  }
+}
 </script>
 
 <style scoped>
