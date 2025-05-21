@@ -402,47 +402,6 @@ function handlePlayerCollisions() {
   let bestPenetrationDepth = 0;
   let collisionWithFixed = false;
 
-  // Check for collisions with fixed boxes
-  for (const box of fixedBoxes) {
-    if (!box.body || !box.collider) continue;
-
-    // Use more robust contact detection with increased margins
-    const contact = world.contactPair(
-      box.collider.handle,
-      playerCollider.handle
-    );
-
-    if (
-      contact &&
-      typeof contact.hasAnyContact === "function" &&
-      contact.hasAnyContact()
-    ) {
-      hasCollision = true;
-      collisionWithFixed = true;
-
-      const manifolds = contact.manifolds();
-      for (let i = 0; i < manifolds.length; i++) {
-        const manifold = manifolds[i];
-        const worldNormal = manifold.normal();
-        const normal = new THREE.Vector3(
-          worldNormal.x,
-          worldNormal.y,
-          worldNormal.z
-        );
-        const points = manifold.points();
-
-        for (let j = 0; j < points.length; j++) {
-          const point = points[j];
-          const depth = point.depth();
-
-          if (depth > bestPenetrationDepth) {
-            bestPenetrationDepth = depth;
-            bestCollisionNormal = normal.clone();
-          }
-        }
-      }
-    }
-  }
 
   // Enhanced raycasting as fallback to catch more collisions
   if (!hasCollision) {
@@ -1045,7 +1004,7 @@ function createSpawnPlatform() {
   const spawnPlatformSize = new THREE.Vector3(10, 1, 10); // Width, height, depth
   const spawnPosition = new THREE.Vector3(
     0,
-    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + SPAWN_HEIGHT - 2, // Fixed: using SPAWN_HEIGHT instead of spawnHeight
+    PLANET_RADIUS + TERRAIN_HEIGHT_SCALE + SPAWN_HEIGHT - 5, // Fixed: using SPAWN_HEIGHT instead of spawnHeight
     0
   );
   
