@@ -802,7 +802,6 @@ function updatePlayer(deltaTime) {
   // This prevents normal conflicts between terrain and fixed objects
   if (!playerState.onFixedObject && !wasJumping) {
     // Ground checking with raycasts for terrain only
-    // Remove declaration since we moved it to the function level
     hitNormals = [];
     closestHitDistance = Infinity;
 
@@ -813,20 +812,28 @@ function updatePlayer(deltaTime) {
     );
     const groundCheckDistance = PLAYER_RADIUS + 0.8;
 
-    const forwardDir = new THREE.Vector3(1, 0, 0).cross(up).normalize();
+    const forwardDir = playerState.facingDirection.clone().projectOnPlane(up).normalize();
     const rightDir = up.clone().cross(forwardDir).normalize();
     
+    // More comprehensive ray pattern that includes backward direction
     const rayPositions = [
-      feetPosition.clone(),
-      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
+      feetPosition.clone(), // Center
+      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward
+      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Right
+      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward
+      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)), // Left
+      // Add diagonal rays for more comprehensive coverage
+      feetPosition.clone().add(forwardDir.clone().add(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward-Right
+      feetPosition.clone().add(forwardDir.clone().sub(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Forward-Left
+      feetPosition.clone().sub(forwardDir.clone().add(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward-Left
+      feetPosition.clone().sub(forwardDir.clone().sub(rightDir.clone()).normalize().multiplyScalar(PLAYER_RADIUS * 0.7)), // Backward-Right
     ];
 
+    // Use consistent ray distances for all directions
     for (let i = 0; i < rayPositions.length; i++) {
       const raycaster = new THREE.Raycaster();
       raycaster.set(rayPositions[i], gravityDir);
+      raycaster.far = groundCheckDistance * 2; // Increase ray length for consistent checking
       const intersects = raycaster.intersectObject(terrain);
 
       if (intersects.length > 0) {
@@ -842,7 +849,8 @@ function updatePlayer(deltaTime) {
           closestHitDistance = intersects[0].distance;
         }
 
-        if (i === 0 && intersects[0].distance < groundCheckDistance) {
+        // Consider all rays for ground detection, not just the center one
+        if (intersects[0].distance < groundCheckDistance) {
           onSurface = true;
           playerState.onGround = true;
         }
@@ -919,6 +927,7 @@ function updatePlayer(deltaTime) {
   }
 
   // Calculate movement direction based on inputs
+  // Use the player's facing direction for forward/backward movement
   const surfaceAlignedFacing = playerState.facingDirection.clone()
     .projectOnPlane(surfaceNormal)
     .normalize();
@@ -928,29 +937,48 @@ function updatePlayer(deltaTime) {
     .normalize();
 
   playerState.direction.set(0, 0, 0);
-  if (playerState.moveForward) playerState.direction.add(surfaceAlignedFacing);
-  if (playerState.moveBackward) playerState.direction.sub(surfaceAlignedFacing);
-  if (playerState.moveRight) playerState.direction.add(right);
-  if (playerState.moveLeft) playerState.direction.sub(right);
+  
+  // Keep track of the movement strength to make backward movement as strong as forward
+  let movementStrength = 0;
+  
+  if (playerState.moveForward) {
+    playerState.direction.add(surfaceAlignedFacing);
+    movementStrength++;
+  }
+  if (playerState.moveBackward) {
+    playerState.direction.sub(surfaceAlignedFacing);
+    movementStrength++;
+  }
+  if (playerState.moveRight) {
+    playerState.direction.add(right);
+    movementStrength++;
+  }
+  if (playerState.moveLeft) {
+    playerState.direction.sub(right);
+    movementStrength++;
+  }
 
-  const isMoving = playerState.moveForward || playerState.moveBackward || 
-                  playerState.moveLeft || playerState.moveRight;
-
-  // Apply movement if there is input
-  if (playerState.direction.lengthSq() > 0) {
+  // Apply movement with consistent strength regardless of direction
+  const isMoving = movementStrength > 0;
+  if (isMoving) {
+    playerState.direction.normalize();
+    
     const slopeAngle = Math.acos(Math.min(1, Math.abs(surfaceNormal.dot(up))));
     
     // Remove slope checking and always allow full movement speed
     let moveSpeedMultiplier = 1.0;
 
-    playerState.direction.normalize()
-      .multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
+    // Apply consistent movement speed regardless of direction
+    playerState.direction.multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
 
-    // Add movement to position - Fix reference error by checking if hitNormals exists
-    if (playerState.lastContactNormal && playerState.onGround && 
-        (!hitNormals || hitNormals.length === 0)) {
-      const contactNormal = playerState.lastContactNormal;
-      const projectedDirection = playerState.direction.clone().projectOnPlane(contactNormal);
+    // Add movement to position - ensure it's projected on the surface
+    if (playerState.onGround) {
+      // Use the same surface normal for movement projection in all directions
+      const movementSurfaceNormal = playerState.onFixedObject && playerState.surfaceNormal 
+        ? playerState.surfaceNormal 
+        : (playerState.lastContactNormal || surfaceNormal);
+      
+      const projectedDirection = playerState.direction.clone().projectOnPlane(movementSurfaceNormal);
       position.add(projectedDirection);
     } else {
       position.add(playerState.direction);
