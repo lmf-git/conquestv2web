@@ -43,7 +43,6 @@ const JUMP_FORCE = 18;
 const PLANET_RADIUS = 50;
 const TERRAIN_HEIGHT_SCALE = 50;
 const TURN_SPEED = 2;
-const MAX_CLIMBABLE_SLOPE = Math.PI / 5;
 const NUM_DYNAMIC_OBJECTS = 10;
 const DYNAMIC_OBJECT_SIZE = 1;
 
@@ -164,15 +163,6 @@ function createFixedCollidersOnTerrain() {
           terrain.matrixWorld
         );
         normal.applyMatrix3(normalMatrix).normalize();
-
-        const up = position.clone().sub(GRAVITY_CENTER).normalize();
-        const slopeAngle = Math.acos(Math.min(1, Math.abs(normal.dot(up))));
-        const MAX_ACCEPTABLE_SLOPE = Math.PI / 6;
-
-        if (slopeAngle > MAX_ACCEPTABLE_SLOPE) {
-          attempts++;
-          continue;
-        }
 
         validSpot = true;
         for (const pos of placedPositions) {
@@ -758,22 +748,9 @@ function updatePlayer(deltaTime) {
   // Apply movement if there is input
   if (playerState.direction.lengthSq() > 0) {
     const slopeAngle = Math.acos(Math.min(1, Math.abs(surfaceNormal.dot(up))));
+    
+    // Remove slope checking and always allow full movement speed
     let moveSpeedMultiplier = 1.0;
-
-    // Handle steep slopes
-    if (slopeAngle > MAX_CLIMBABLE_SLOPE && playerState.onGround) {
-      const upComponent = playerState.direction.dot(surfaceNormal);
-      
-      if (upComponent > 0) {
-        const steepnessFactor = (slopeAngle - MAX_CLIMBABLE_SLOPE) / 
-                               (Math.PI / 2 - MAX_CLIMBABLE_SLOPE);
-        moveSpeedMultiplier = Math.max(0, 1 - steepnessFactor * 1.5);
-        
-        if (slopeAngle >= Math.PI / 2) {
-          moveSpeedMultiplier = 0;
-        }
-      }
-    }
 
     playerState.direction.normalize()
       .multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
