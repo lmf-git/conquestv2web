@@ -398,11 +398,16 @@ function handlePlayerCollisions() {
   let bestCollisionNormal = null;
   let bestPenetrationDepth = 0;
   let isReorienting = false;
+  let collisionWithFixed = false;
+
+  // Increase collision detection radius to prevent tunneling
+  const collisionRadius = PLAYER_RADIUS * 1.1;
 
   // Check for collisions with fixed boxes
   for (const box of fixedBoxes) {
     if (!box.body || !box.collider) continue;
 
+    // Use more robust contact detection with increased margins
     const contact = world.contactPair(
       box.collider.handle,
       playerCollider.handle
@@ -414,6 +419,7 @@ function handlePlayerCollisions() {
       contact.hasAnyContact()
     ) {
       hasCollision = true;
+      collisionWithFixed = true;
 
       const manifolds = contact.manifolds();
       for (let i = 0; i < manifolds.length; i++) {
@@ -439,58 +445,109 @@ function handlePlayerCollisions() {
     }
   }
 
-  // If no collision detected through physics system, use raycasting as fallback
+  // Enhanced raycasting as fallback to catch more collisions
   if (!hasCollision) {
+    // Perform more comprehensive raycast collision detection
+    // Cast rays in more directions, including the movement direction
+    const directionNormalized = playerState.direction.clone().normalize();
+    
     const capsuleBottomOffset = PLAYER_HEIGHT / 2;
-    const feetPosition = playerPosition.clone().add(
-      gravityUp.clone().negate().multiplyScalar(capsuleBottomOffset - 0.05)
-    );
+    const capsuleCenterOffset = 0;  // Added to check the center of the capsule too
+    
+    // Positions to raycast from - include more points around capsule
+    const rayStartPositions = [
+      // Bottom of capsule
+      playerPosition.clone().add(gravityUp.clone().negate().multiplyScalar(capsuleBottomOffset - 0.05)),
+      // Middle of capsule
+      playerPosition.clone().add(gravityUp.clone().negate().multiplyScalar(capsuleCenterOffset)),
+      // Top of capsule
+      playerPosition.clone().add(gravityUp.clone().multiplyScalar(capsuleBottomOffset - 0.05)),
+    ];
 
     const forwardDir = new THREE.Vector3(1, 0, 0).cross(gravityUp).normalize();
     const rightDir = gravityUp.clone().cross(forwardDir).normalize();
     
-    const rayPositions = [
-      feetPosition.clone(),
-      feetPosition.clone().add(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().add(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().sub(forwardDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-      feetPosition.clone().sub(rightDir.clone().multiplyScalar(PLAYER_RADIUS * 0.7)),
-    ];
+    // Generate rays in a more comprehensive pattern
+    const rayPositions = [];
+    
+    for (const startPos of rayStartPositions) {
+      // Center ray
+      rayPositions.push(startPos.clone());
+      
+      // Rays around the capsule
+      const radius = PLAYER_RADIUS * 0.9;  // Slightly inside the capsule
+      const rayDirections = [
+        forwardDir.clone().multiplyScalar(radius),
+        rightDir.clone().multiplyScalar(radius),
+        forwardDir.clone().negate().multiplyScalar(radius),
+        rightDir.clone().negate().multiplyScalar(radius),
+        // Add diagonal rays
+        forwardDir.clone().add(rightDir).normalize().multiplyScalar(radius),
+        forwardDir.clone().add(rightDir.clone().negate()).normalize().multiplyScalar(radius),
+        forwardDir.clone().negate().add(rightDir).normalize().multiplyScalar(radius),
+        forwardDir.clone().negate().add(rightDir.clone().negate()).normalize().multiplyScalar(radius),
+      ];
+      
+      // Add movement direction ray - important to prevent tunneling
+      if (playerState.direction.lengthSq() > 0) {
+        rayDirections.push(directionNormalized.clone().multiplyScalar(radius));
+      }
+      
+      for (const dir of rayDirections) {
+        rayPositions.push(startPos.clone().add(dir));
+      }
+    }
 
     let closestHitDistance = Infinity;
     const objectMeshes = fixedBoxes.map((box) => box.mesh);
-    const gravDirNeg = gravityUp.clone().negate();
+    
+    // Cast rays in all directions, not just gravity direction
+    const rayDirections = [
+      gravityUp.clone().negate(),  // Down
+      // Using direction of movement for rays to prevent tunneling
+      directionNormalized.clone().negate(),  // Opposite to movement
+      directionNormalized.clone(),           // Direction of movement
+      forwardDir,
+      forwardDir.clone().negate(),
+      rightDir,
+      rightDir.clone().negate(),
+    ];
 
-    for (let i = 0; i < rayPositions.length; i++) {
-      const raycaster = new THREE.Raycaster();
-      raycaster.set(rayPositions[i], gravDirNeg);
+    for (const rayPos of rayPositions) {
+      for (const rayDir of rayDirections) {
+        const raycaster = new THREE.Raycaster();
+        raycaster.set(rayPos, rayDir);
+        raycaster.far = PLAYER_RADIUS * 1.2;  // Check slightly beyond the capsule radius
 
-      const intersects = raycaster.intersectObjects(objectMeshes);
+        const intersects = raycaster.intersectObjects(objectMeshes);
 
-      if (intersects.length > 0) {
-        const hit = intersects[0];
-        const hitBox = fixedBoxes.find((box) => box.mesh === hit.object);
-        if (!hitBox) continue;
+        if (intersects.length > 0) {
+          const hit = intersects[0];
+          const hitBox = fixedBoxes.find((box) => box.mesh === hit.object);
+          if (!hitBox) continue;
 
-        const normal = hit.face.normal.clone();
-        const normalMatrix = new THREE.Matrix3().getNormalMatrix(
-          hit.object.matrixWorld
-        );
-        const worldNormal = normal.applyMatrix3(normalMatrix).normalize();
+          const normal = hit.face.normal.clone();
+          const normalMatrix = new THREE.Matrix3().getNormalMatrix(
+            hit.object.matrixWorld
+          );
+          const worldNormal = normal.applyMatrix3(normalMatrix).normalize();
 
-        if (hit.distance < closestHitDistance) {
-          closestHitDistance = hit.distance;
-          bestCollisionNormal = worldNormal;
-          bestPenetrationDepth = PLAYER_RADIUS + 0.05 - hit.distance;
-          hasCollision = true;
+          if (hit.distance < closestHitDistance) {
+            closestHitDistance = hit.distance;
+            bestCollisionNormal = worldNormal;
+            bestPenetrationDepth = PLAYER_RADIUS * 1.1 - hit.distance;
+            hasCollision = true;
+            collisionWithFixed = true;
+          }
         }
       }
     }
   }
 
-  // Handle collision resolution
+  // Handle collision resolution with improved logic
   if (hasCollision && bestCollisionNormal && bestPenetrationDepth > 0) {
     playerState.lastContactNormal = bestCollisionNormal.clone();
+    playerState.surfaceNormal = bestCollisionNormal.clone();
 
     const dotWithUp = bestCollisionNormal.dot(gravityUp);
     const isGroundContact = dotWithUp > 0.5;
@@ -499,25 +556,51 @@ function handlePlayerCollisions() {
       playerState.onGround = true;
       playerState.falling = false;
       isReorienting = true;
+      
+      // Set fixed object flag
+      playerState.onFixedObject = collisionWithFixed;
+      
+      // Zero out downward velocity
+      const downwardVelocity = gravityUp.clone().negate().multiplyScalar(
+        Math.max(0, -playerState.velocity.dot(gravityUp))
+      );
+      
+      if (downwardVelocity.lengthSq() > 0) {
+        playerState.velocity.sub(downwardVelocity);
+      }
+      
+      // When not moving on fixed objects, eliminate ALL velocity
+      if (collisionWithFixed && !playerState.moveForward && !playerState.moveBackward && 
+          !playerState.moveLeft && !playerState.moveRight) {
+        playerState.velocity.set(0, 0, 0);
+      }
     }
 
-    // Push player out of collision
-    playerPosition.add(bestCollisionNormal.clone().multiplyScalar(bestPenetrationDepth * 1.01));
+    // More aggressive push out of collision with objects
+    const pushMultiplier = collisionWithFixed ? 1.2 : 1.05;
+    playerPosition.add(bestCollisionNormal.clone().multiplyScalar(bestPenetrationDepth * pushMultiplier));
 
-    // Adjust velocity to reflect off surface
+    // More precise velocity reflection
     const normalVelocity = bestCollisionNormal.clone().multiplyScalar(
       playerState.velocity.dot(bestCollisionNormal)
     );
 
     if (normalVelocity.dot(bestCollisionNormal) < 0) {
+      // Reflect velocity off the surface with higher friction for fixed objects
       const tangentialVelocity = playerState.velocity.clone().sub(normalVelocity);
-      const frictionFactor = isGroundContact ? 0.7 : 0.95;
+      const frictionFactor = isGroundContact ? 
+        (collisionWithFixed ? 0.4 : 0.7) : 0.95;
       tangentialVelocity.multiplyScalar(frictionFactor);
       playerState.velocity.copy(tangentialVelocity);
+      
+      // Ensure velocity is strictly parallel to the surface for fixed objects
+      if (collisionWithFixed) {
+        playerState.velocity = playerState.velocity.projectOnPlane(bestCollisionNormal);
+      }
     }
   }
 
-  // Update player body position
+  // Update player body position with more precision
   playerBody.setTranslation({
     x: playerPosition.x,
     y: playerPosition.y,
@@ -606,11 +689,24 @@ function updatePlayerPositionAndOrientation(
 function updatePlayer(deltaTime) {
   if (!playerBody) return;
 
+  // Add playerState.onFixedObject if it doesn't exist already
+  playerState.onFixedObject = playerState.onFixedObject || false;
+  
+  // Reset fixed object status at the beginning of each frame
+  playerState.onFixedObject = false;
+
+  // Create this array at the function level so it's available throughout the function
+  let hitNormals = [];
+  let closestHitDistance = Infinity;
+  
   const position = new THREE.Vector3(
     playerBody.translation().x,
     playerBody.translation().y,
     playerBody.translation().z
   );
+
+  // Save previous position for tunneling prevention
+  const previousPosition = position.clone();
 
   const gravityDir = GRAVITY_CENTER.clone().sub(position).normalize();
   const up = gravityDir.clone().negate();
@@ -622,16 +718,24 @@ function updatePlayer(deltaTime) {
     playerState.onGround = false;
   }
 
-  // Ground checking with raycasts
-  const hitNormals = [];
-  let closestHitDistance = Infinity;
+  // Process collisions with fixed objects BEFORE ground checks
+  // This ensures fixed object contacts take precedence
+  handlePlayerCollisions();
 
-  if (!wasJumping) {
+  // Skip terrain ground checking if we're already on a fixed object
+  // This prevents normal conflicts between terrain and fixed objects
+  if (!playerState.onFixedObject && !wasJumping) {
+    // Ground checking with raycasts for terrain only
+    // Remove declaration since we moved it to the function level
+    hitNormals = [];
+    closestHitDistance = Infinity;
+
     const capsuleBottomOffset = PLAYER_HEIGHT / 2;
+    // Use the updated ground check parameters
     const feetPosition = position.clone().add(
-      gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.05)
+      gravityDir.clone().multiplyScalar(capsuleBottomOffset - 0.8)
     );
-    const groundCheckDistance = PLAYER_RADIUS + 0.5;
+    const groundCheckDistance = PLAYER_RADIUS + 0.8;
 
     const forwardDir = new THREE.Vector3(1, 0, 0).cross(up).normalize();
     const rightDir = up.clone().cross(forwardDir).normalize();
@@ -668,47 +772,57 @@ function updatePlayer(deltaTime) {
         }
       }
     }
-  }
 
-  // Determine surface normal and ground status
-  let surfaceNormal = up.clone();
-  if (hitNormals.length > 0) {
-    surfaceNormal = new THREE.Vector3();
-    for (const normal of hitNormals) {
-      surfaceNormal.add(normal);
-    }
-    surfaceNormal.divideScalar(hitNormals.length).normalize();
-
-    const groundCheckDistance = PLAYER_RADIUS + 0.5;
-    if (closestHitDistance < groundCheckDistance) {
-      onSurface = true;
-      playerState.onGround = true;
-
-      // Project velocity onto surface
-      const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
-      if (normalVelocity.dot(surfaceNormal) < 0) {
-        playerState.velocity.sub(normalVelocity);
+    // Determine surface normal and ground status
+    let surfaceNormal = up.clone();
+    if (hitNormals.length > 0) {
+      surfaceNormal = new THREE.Vector3();
+      for (const normal of hitNormals) {
+        surfaceNormal.add(normal);
       }
-    } else {
-      playerState.onGround = false;
-    }
-  } else if (playerState.lastContactNormal && playerState.onGround) {
-    // Use last known contact normal if we still consider ourselves grounded
-    surfaceNormal = playerState.lastContactNormal.clone();
-    onSurface = true;
-  } else {
-    // Check if we're inside the planet and push out if needed
-    const distToCenter = position.distanceTo(GRAVITY_CENTER);
-    const minDistance = PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT / 2;
+      surfaceNormal.divideScalar(hitNormals.length).normalize();
 
-    if (distToCenter < minDistance) {
-      position.copy(up.clone().multiplyScalar(minDistance));
-      playerState.onGround = true;
-      playerState.velocity.projectOnPlane(up);
+      // Use the consistent groundCheckDistance here too
+      if (closestHitDistance < groundCheckDistance) {
+        onSurface = true;
+        playerState.onGround = true;
+
+        // Project velocity onto surface
+        const normalVelocity = playerState.velocity.clone().projectOnVector(surfaceNormal);
+        if (normalVelocity.dot(surfaceNormal) < 0) {
+          playerState.velocity.sub(normalVelocity);
+        }
+      } else {
+        playerState.onGround = false;
+      }
+    } else if (playerState.lastContactNormal && playerState.onGround) {
+      // Use last known contact normal if we still consider ourselves grounded
+      surfaceNormal = playerState.lastContactNormal.clone();
+      onSurface = true;
     } else {
-      playerState.onGround = false;
+      // Check if we're inside the planet and push out if needed
+      const distToCenter = position.distanceTo(GRAVITY_CENTER);
+      const minDistance = PLANET_RADIUS - TERRAIN_HEIGHT_SCALE * 0.5 + PLAYER_HEIGHT / 2;
+
+      if (distToCenter < minDistance) {
+        position.copy(up.clone().multiplyScalar(minDistance));
+        playerState.onGround = true;
+        playerState.velocity.projectOnPlane(up);
+      } else {
+        playerState.onGround = false;
+      }
+    }
+
+    // Store surface normal if we're not on a fixed object
+    if (!playerState.onFixedObject) {
+      playerState.surfaceNormal = surfaceNormal.clone();
     }
   }
+
+  // Use appropriate normal based on what contact we have
+  const surfaceNormal = playerState.onFixedObject && playerState.lastContactNormal 
+    ? playerState.lastContactNormal.clone()
+    : (playerState.surfaceNormal || up.clone());
 
   // Apply gravity if not on ground
   if (!playerState.onGround) {
@@ -755,8 +869,9 @@ function updatePlayer(deltaTime) {
     playerState.direction.normalize()
       .multiplyScalar(MOVE_SPEED * moveSpeedMultiplier * deltaTime);
 
-    // Add movement to position
-    if (playerState.lastContactNormal && playerState.onGround && hitNormals.length === 0) {
+    // Add movement to position - Fix reference error by checking if hitNormals exists
+    if (playerState.lastContactNormal && playerState.onGround && 
+        (!hitNormals || hitNormals.length === 0)) {
       const contactNormal = playerState.lastContactNormal;
       const projectedDirection = playerState.direction.clone().projectOnPlane(contactNormal);
       position.add(projectedDirection);
@@ -790,24 +905,71 @@ function updatePlayer(deltaTime) {
 
   // Apply friction when on ground
   if (playerState.onGround) {
+    const isMoving = playerState.moveForward || playerState.moveBackward || 
+                    playerState.moveLeft || playerState.moveRight;
+                    
     if (!isMoving) {
-      // Higher friction when not moving
-      playerState.velocity.multiplyScalar(0.05);
+      // Higher friction when not moving - even higher for fixed objects
+      const frictionMultiplier = playerState.onFixedObject ? 0.0001 : 0.05;
+      playerState.velocity.multiplyScalar(frictionMultiplier);
       
-      if (playerState.velocity.lengthSq() < 0.03) {
+      // Lower threshold for fixed objects to stop completely
+      const velocityThreshold = playerState.onFixedObject ? 0.0001 : 0.03;
+      if (playerState.velocity.lengthSq() < velocityThreshold) {
         playerState.velocity.set(0, 0, 0);
       }
+    } else if (playerState.onFixedObject) {
+      // Special case: when moving on fixed objects, maintain a clean
+      // velocity that's exactly what we want
+      playerState.velocity.copy(playerState.direction);
     } else {
-      // Some friction when moving
+      // Normal friction when moving on terrain
       playerState.velocity.multiplyScalar(0.8);
     }
     
-    // Project velocity onto surface
-    playerState.velocity = playerState.velocity.projectOnPlane(surfaceNormal);
+    // Always project velocity onto current surface normal
+    // Use a more exact projection for fixed objects
+    if (playerState.onFixedObject && playerState.surfaceNormal) {
+      playerState.velocity = playerState.velocity.projectOnPlane(playerState.surfaceNormal);
+    } else {
+      playerState.velocity = playerState.velocity.projectOnPlane(surfaceNormal);
+    }
   }
 
   // Apply velocity to position
   position.add(playerState.velocity.clone().multiplyScalar(deltaTime));
+
+  // Add tunneling prevention - must come BEFORE updating position and orientation
+  if (playerState.direction.lengthSq() > 0) {
+    const movement = position.clone().sub(previousPosition);
+    if (movement.lengthSq() > 0) {
+      // Check if we'd tunnel through any fixed objects
+      const ray = new THREE.Raycaster();
+      ray.set(previousPosition, movement.clone().normalize());
+      ray.far = movement.length() * 1.1;  // Check slightly beyond movement distance
+      
+      const fixedMeshes = fixedBoxes.map(box => box.mesh);
+      const hits = ray.intersectObjects(fixedMeshes);
+      
+      if (hits.length > 0) {
+        // We might be tunneling - use a more conservative position update
+        const hit = hits[0];
+        if (hit.distance < movement.length()) {
+          // Stop just before the collision point
+          const safeDistance = Math.max(0, hit.distance - 0.05);
+          const safeMovement = movement.clone().normalize().multiplyScalar(safeDistance);
+          position.copy(previousPosition).add(safeMovement);
+          
+          // Update velocity to stop in this direction
+          const hitNormal = hit.face.normal.clone();
+          const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+          const worldNormal = hitNormal.applyMatrix3(normalMatrix).normalize();
+          
+          playerState.velocity = playerState.velocity.projectOnPlane(worldNormal);
+        }
+      }
+    }
+  }
 
   // Update player position and orientation
   updatePlayerPositionAndOrientation(
@@ -817,7 +979,8 @@ function updatePlayer(deltaTime) {
     up
   );
 
-  // Handle collisions after movement
+  // Handle collisions AFTER updating position and orientation 
+  // to ensure proper resolution with updated alignment
   handlePlayerCollisions();
 }
 
