@@ -22,6 +22,7 @@ const playerState = {
   velocity: new THREE.Vector3(),
   direction: new THREE.Vector3(),
   onGround: false,
+  falling: false, // Add falling state property
   jump: false,
   moveForward: false,
   moveBackward: false,
@@ -32,6 +33,8 @@ const playerState = {
 
   turnLeft: false,
   turnRight: false,
+  
+  onFixedObject: false, // Initialize here rather than in update function
 };
 
 const GRAVITY_CENTER = new THREE.Vector3(0, 0, 0);
@@ -527,20 +530,14 @@ function handlePlayerCollisions() {
 
   // Handle collision resolution with improved logic
   if (hasCollision && bestCollisionNormal && bestPenetrationDepth > 0) {
-    // Store contact normal regardless of what we do with it
-    playerState.lastContactNormal = bestCollisionNormal.clone();
-
+    // Remove storing contact normal
     const dotWithUp = bestCollisionNormal.dot(gravityUp);
     const isGroundContact = dotWithUp > 0.5;
 
-    // Only update surface normal when we're actually on a surface (ground contact)
-    // otherwise just use it for deflection but don't change orientation
+    // Only use normal for current physics calculations, don't store it
     if (isGroundContact) {
-      playerState.surfaceNormal = bestCollisionNormal.clone();
       playerState.onGround = true;
       playerState.falling = false;
-
-      // Set fixed object flag
       playerState.onFixedObject = collisionWithFixed;
 
       // Zero out downward velocity
@@ -594,11 +591,11 @@ function handlePlayerCollisions() {
   }, true);
 
   // Update orientation ONLY if we need to reorient (ground contact)
-  if (hasCollision && playerState.surfaceNormal && 
+  if (hasCollision && bestCollisionNormal && 
       bestCollisionNormal.dot(gravityUp) > 0.5) {
     updatePlayerPositionAndOrientation(
       playerPosition.clone(),
-      playerState.surfaceNormal,
+      bestCollisionNormal, // Pass directly instead of using stored value
       true,
       gravityUp
     );
@@ -675,9 +672,9 @@ function updatePlayerPositionAndOrientation(
 
 function updatePlayer(deltaTime) {
   if (!playerBody) return;
-
-  // Add playerState.onFixedObject if it doesn't exist already
-  playerState.onFixedObject = playerState.onFixedObject || false;
+  
+  // Save previous fixed object state to detect transitions
+  const wasOnFixedObject = playerState.onFixedObject;
   
   // Reset fixed object status at the beginning of each frame
   playerState.onFixedObject = false;
@@ -708,6 +705,13 @@ function updatePlayer(deltaTime) {
   // Process collisions with fixed objects BEFORE ground checks
   // This ensures fixed object contacts take precedence
   handlePlayerCollisions();
+
+  // If we were on a fixed object last frame but not this frame, 
+  // we need to immediately start falling unless we have terrain contact
+  if (wasOnFixedObject && !playerState.onFixedObject) {
+    playerState.onGround = false; // Reset ground state when leaving a fixed object
+    playerState.falling = true;   // Start falling immediately
+  }
 
   // Skip terrain ground checking if we're already on a fixed object
   // This prevents normal conflicts between terrain and fixed objects
@@ -764,9 +768,9 @@ function updatePlayer(deltaTime) {
     let surfaceNormal = up.clone();
     if (hitNormals.length > 0) {
       surfaceNormal = hitNormals[0].clone(); // Just use the one normal we got
-    } else if (playerState.lastContactNormal && playerState.onGround) {
-      // Use last known contact normal if we still consider ourselves grounded
-      surfaceNormal = playerState.lastContactNormal.clone();
+    } else if (playerState.onGround) {
+      // Use gravity-aligned normal if we consider ourselves grounded but don't have a hit
+      surfaceNormal = up.clone();
       onSurface = true;
       playerState.falling = false;
     } else {
@@ -785,21 +789,17 @@ function updatePlayer(deltaTime) {
       }
     }
 
-    // Store surface normal if we're not on a fixed object
-    if (!playerState.onFixedObject) {
-      playerState.surfaceNormal = surfaceNormal.clone();
-    }
+    // Don't store surface normal anymore
   }
 
-  // Use appropriate normal based on what contact we have
-  // Only use lastContactNormal if it's actually a ground contact
-  const surfaceNormal = playerState.onFixedObject && playerState.surfaceNormal 
-    ? playerState.surfaceNormal.clone()
-    : (playerState.surfaceNormal || up.clone());
+  // Use directly calculated normal for this frame
+  // If we're on a fixed object, this will be calculated later during collision detection
+  const surfaceNormal = up.clone();
 
   // Apply gravity if not on ground
   if (!playerState.onGround) {
     playerState.velocity.add(gravityDir.clone().multiplyScalar(GRAVITY_STRENGTH * deltaTime));
+    playerState.falling = true; // Ensure falling flag is set whenever not on ground
   }
 
   // Handle turning
@@ -1029,16 +1029,7 @@ function createSpawnPlatform() {
     const tiltAngle = Math.atan2(rampHeight, rampLength);
     
     // Build a rotation quaternion to tilt the ramp around the right axis
-    const rampRotation = new THREE.Quaternion().setFromAxisAngle(right, tiltAngle);
-    
-    // Combine with the world-up orientation
-    const rampUp = worldUp.clone().applyQuaternion(rampRotation);
-    const rampMatrix = new THREE.Matrix4().makeBasis(
-      right,
-      rampUp,
-      new THREE.Vector3().crossVectors(right, rampUp).normalize()
-    );
-    const rampQuaternion = new THREE.Quaternion().setFromRotationMatrix(rampMatrix);
+    const rampQuaternion = new THREE.Quaternion().setFromAxisAngle(right, tiltAngle);
     
     // Create the ramp object
     const rampSize = new THREE.Vector3(rampWidth, 0.5, rampLength); // Width, height, length
