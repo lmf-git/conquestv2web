@@ -200,14 +200,17 @@ const createPlatform = () => {
 };
 
 const createPlayer = () => {
-  // Create player physics body
+  // Create player physics body - spawn higher above platform
   const playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(0, 25, 0)
+    .setTranslation(0, 30, 0) // Increased from 25 to 30 for more height
     .setLinearDamping(0.5)
     .setAngularDamping(0.5)
     .setCcdEnabled(true);
   
   playerBody.value = physicsWorld.value.createRigidBody(playerBodyDesc);
+  
+  // Add initial downward velocity to start falling immediately
+  playerBody.value.setLinvel({ x: 0, y: -2, z: 0 }, true);
   
   // Create player collider (capsule shape)
   const playerColliderDesc = RAPIER.ColliderDesc.capsule(
