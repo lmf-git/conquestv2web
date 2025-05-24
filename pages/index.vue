@@ -5,6 +5,7 @@
     <div v-if="!started" class="start-screen">
       <button @click="startGame" class="start-button">Start Game</button>
     </div>
+    <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
     <div class="debug-info" v-if="started">
       <div>Grounded: {{ isGrounded }}</div>
       <div>Position: {{ playerPosition.x.toFixed(2) }}, {{ playerPosition.y.toFixed(2) }}, {{ playerPosition.z.toFixed(2) }}</div>
@@ -31,6 +32,7 @@ const playerPosition = ref(new THREE.Vector3());
 const isMoving = ref(false);
 const currentSpeed = ref(0);
 const isCameraDetached = ref(false);
+const errorMessage = ref(''); // Add error message state
 
 // THREE.js objects - use shallowRef to prevent reactivity issues
 const scene = shallowRef(null);
@@ -74,7 +76,7 @@ const keys = reactive({
 // Physics settings
 const gravity = reactive({
   center: new THREE.Vector3(0, -150, 0),
-  strength: 10  // Reduced from 20 to 10 for more natural feel
+  strength: 20  // Increased from 10 to 20 for more obvious effect
 });
 
 // Modify the utility function to get ground normal to use averaged normals
@@ -173,7 +175,7 @@ const onResize = () => {
   renderer.value.setSize(window.innerWidth, window.innerHeight);
 };
 
-// Add missing onMouseMove function before onMounted
+// Fix the onMouseMove function to correct inverted horizontal controls
 const onMouseMove = (event) => {
   if (!started.value || document.pointerLockElement !== gameCanvas.value) return;
   
@@ -199,9 +201,10 @@ const onMouseMove = (event) => {
         const { groundNormal } = getGroundNormal();
         
         // Create rotation quaternion for horizontal mouse movement
+        // FIXED: Negate movement X to correct inverted controls
         const yawQuat = new THREE.Quaternion().setFromAxisAngle(
           groundNormal, 
-          event.movementX * groundTurnSensitivity
+          -event.movementX * groundTurnSensitivity // Negative sign added here
         );
         
         // Apply to player's physics body
@@ -226,7 +229,8 @@ const onMouseMove = (event) => {
       cameraRotation.value.y = 0;
     } else {
       // When airborne, store yaw in camera rotation
-      cameraRotation.value.y += event.movementX * lookSensitivity;
+      // FIXED: Negate movement X to correct inverted controls
+      cameraRotation.value.y -= event.movementX * lookSensitivity; // Negative sign added here
     }
   } catch (e) {
     console.error("Error in mouse move:", e);
@@ -384,7 +388,7 @@ onBeforeUnmount(() => {
   camera.value = null;
   physicsWorld.value = null;
   playerBody.value = null;
-});
+}); // Add missing closing brace here
 
 // Create stars in the scene
 const createStars = () => {
@@ -567,8 +571,21 @@ const createPlayer = () => {
   
   const sensorCollider = physicsWorld.value.createCollider(sensorColliderDesc, playerBody.value);
   
-  // Give a slight initial velocity to start falling
-  playerBody.value.setLinvel({ x: 0, y: -1, z: 0 }, true);
+  // Explicitly ensure the player starts as not grounded
+  isGrounded.value = false;
+  wasGrounded.value = false;
+  
+  // Give a much stronger initial velocity to start falling
+  const initialGravity = new THREE.Vector3()
+    .subVectors(gravity.center, new THREE.Vector3(0, 60, 0))
+    .normalize();
+  
+  playerBody.value.setLinvel({ 
+    x: initialGravity.x * -15,  // Stronger downward velocity in gravity direction
+    y: initialGravity.y * -15, 
+    z: initialGravity.z * -15 
+  }, true);
+  console.log("Set initial downward velocity in gravity direction");
   
   // Create player visual representation (make it visible but transparent)
   const playerGeometry = new THREE.CapsuleGeometry(
@@ -597,7 +614,7 @@ const createPlayer = () => {
   createRayVisualizations();
 };
 
-// Simplify checkGrounded function - no longer needs to switch body types
+// Modify the checkGrounded function to use an even shorter ray length and fix ground detection
 const checkGrounded = () => {
   if (!playerBody.value) return;
   
@@ -635,13 +652,13 @@ const checkGrounded = () => {
       .add(upVector.clone().multiplyScalar(-footHeight))
   );
   
-  // Cast rays with slightly longer length for better detection
-  const rayLength = 0.7; // Increased for better detection and earlier response
-  
   // Add more rays for better ground detection
   const centerFootPos = playerPos.clone().add(
     upVector.clone().multiplyScalar(-footHeight)
   );
+  
+  // CRITICAL: Use a VERY short ray length to prevent false ground detection
+  const rayLength = 0.2; // Reduced even further to prevent false positives
   
   // Create rays for left, right, and center feet
   const rayDir = { x: gravityDir.x, y: gravityDir.y, z: gravityDir.z };
@@ -662,14 +679,43 @@ const checkGrounded = () => {
     rayDir
   );
   
-  // Perform raycasts
-  leftFootHit.value = physicsWorld.value.castRay(leftRay, rayLength, true);
-  rightFootHit.value = physicsWorld.value.castRay(rightRay, rayLength, true);
-  centerFootHit.value = physicsWorld.value.castRay(centerRay, rayLength, true);
+  // Store the previous hit values to detect changes
+  const prevLeftHit = leftFootHit.value !== null;
+  const prevRightHit = rightFootHit.value !== null;
+  const prevCenterHit = centerFootHit.value !== null;
+  
+  // Perform raycasts - filter by toi to only detect VERY close ground
+  const maxToi = 0.25; // Maximum ray hit distance to consider as "grounded"
+  
+  // Cast rays and only accept hits within the maxToi distance
+  const leftResult = physicsWorld.value.castRay(leftRay, rayLength, true);
+  leftFootHit.value = leftResult && leftResult.toi < maxToi ? leftResult : null;
+  
+  const rightResult = physicsWorld.value.castRay(rightRay, rayLength, true);
+  rightFootHit.value = rightResult && rightResult.toi < maxToi ? rightResult : null;
+  
+  const centerResult = physicsWorld.value.castRay(centerRay, rayLength, true);
+  centerFootHit.value = centerResult && centerResult.toi < maxToi ? centerResult : null;
   
   // Check if any foot is on ground
   wasGrounded.value = isGrounded.value;
   const nowGrounded = (leftFootHit.value !== null) || (rightFootHit.value !== null) || (centerFootHit.value !== null);
+  
+  // Debug log when ray hits change
+  if (prevLeftHit !== (leftFootHit.value !== null) ||
+      prevRightHit !== (rightFootHit.value !== null) ||
+      prevCenterHit !== (centerFootHit.value !== null)) {
+    console.log(`Ray hits changed - L:${leftFootHit.value !== null}, R:${rightFootHit.value !== null}, C:${centerFootHit.value !== null}, Y:${playerPos.y.toFixed(2)}`);
+  }
+  
+  // Debug log when grounded status changes
+  if (wasGrounded.value !== nowGrounded) {
+    console.log(`Grounded changed: ${wasGrounded.value} -> ${nowGrounded}`,
+                `Left hit: ${leftFootHit.value !== null}`,
+                `Right hit: ${rightFootHit.value !== null}`,
+                `Center hit: ${centerFootHit.value !== null}`,
+                `Y: ${playerPos.y.toFixed(2)}`);
+  }
   
   // Update grounded state
   isGrounded.value = nowGrounded;
@@ -693,11 +739,11 @@ const checkGrounded = () => {
     // Just left ground
     resetCameraForAirborne();
     
-    // Add a tiny downward impulse to kickstart falling
+    // Add a stronger downward impulse to kickstart falling
     const { gravityDir } = getGroundNormal();
     playerBody.value.setLinvel({
       x: playerBody.value.linvel().x,
-      y: playerBody.value.linvel().y - 0.5, // Slight boost downward
+      y: playerBody.value.linvel().y - 2.0, // Stronger downward boost
       z: playerBody.value.linvel().z
     }, true);
   }
@@ -706,7 +752,7 @@ const checkGrounded = () => {
   updateRayVisualizations(leftFootPos, rightFootPos, centerFootPos, rayDir, rayLength);
 };
 
-// Simplify applyPointGravity for kinematic body only
+// Modify applyPointGravity for more consistent gravity application
 const applyPointGravity = () => {
   if (!playerBody.value) return;
   
@@ -726,46 +772,200 @@ const applyPointGravity = () => {
   // Current velocity
   const currentVel = playerBody.value.linvel();
   
-  // Apply different gravity based on grounded state
-  const gravityMultiplier = isGrounded.value ? 0.05 : 1.0;
-  const gravitationalAcceleration = gravity.strength * 0.5;
+  // Don't apply gravity when grounded, only when in air
+  if (isGrounded.value) {
+    // Apply minimal gravity to keep the player pressed against the ground
+    const groundingForce = 0.05; 
+    playerBody.value.setLinvel({
+      x: currentVel.x,
+      y: currentVel.y + gravityDir.y * groundingForce,
+      z: currentVel.z
+    }, true);
+    return;
+  }
+  
+  // Calculate how much velocity to add based on gravity
+  const gravitationalAcceleration = gravity.strength * 4.0; // Very strong effect
+  
+  // Log when velocity is very low to debug issues
+  const currentSpeed = Math.sqrt(
+    currentVel.x * currentVel.x + 
+    currentVel.y * currentVel.y + 
+    currentVel.z * currentVel.z
+  );
+  
+  if (currentSpeed < 0.5 && !isGrounded.value) {
+    // Reset velocity when stuck
+    console.warn("Player stuck with low velocity - applying impulse");
+    playerBody.value.setLinvel({ 
+      x: gravityDir.x * -20, 
+      y: gravityDir.y * -20,  // Strong downward impulse in gravity direction
+      z: gravityDir.z * -20 
+    }, true);
+    return; // Skip normal gravity calculation
+  }
+  
+  // Calculate dot product to see if we're already moving in gravity direction
+  const velDotGravity = 
+    currentVel.x * gravityDir.x + 
+    currentVel.y * gravityDir.y + 
+    currentVel.z * gravityDir.z;
   
   // Compute new velocity by adding gravity acceleration
+  // Use higher deltaTime to increase gravity effect
+  const deltaTime = 1/30; // Higher value for stronger effect
+  
   const newVel = {
-    x: currentVel.x + gravityDir.x * gravitationalAcceleration * gravityMultiplier,
-    y: currentVel.y + gravityDir.y * gravitationalAcceleration * gravityMultiplier,
-    z: currentVel.z + gravityDir.z * gravitationalAcceleration * gravityMultiplier
+    x: currentVel.x + gravityDir.x * gravitationalAcceleration * deltaTime,
+    y: currentVel.y + gravityDir.y * gravitationalAcceleration * deltaTime,
+    z: currentVel.z + gravityDir.z * gravitationalAcceleration * deltaTime
   };
   
   // Ensure minimum falling speed when in air
   if (!isGrounded.value) {
-    const velInGravDir = currentVel.x * gravityDir.x + 
-                          currentVel.y * gravityDir.y + 
-                          currentVel.z * gravityDir.z;
+    const minFallSpeed = 20.0; // Even higher for more obvious falling
     
-    const minFallSpeed = 5.0;
-    if (velInGravDir < minFallSpeed) {
-      const speedDiff = minFallSpeed - velInGravDir;
-      newVel.x += gravityDir.x * speedDiff * 0.3;
-      newVel.y += gravityDir.y * speedDiff * 0.3;
-      newVel.z += gravityDir.z * speedDiff * 0.3;
+    if (velDotGravity < minFallSpeed) {
+      const speedDiff = minFallSpeed - velDotGravity;
+      const boostFactor = 1.5; // Higher boost factor
+      
+      newVel.x += gravityDir.x * speedDiff * boostFactor;
+      newVel.y += gravityDir.y * speedDiff * boostFactor;
+      newVel.z += gravityDir.z * speedDiff * boostFactor;
+      
+      // Log the velocity boost
+      if (Math.random() < 0.05) {
+        console.log("Boosting gravity velocity:", 
+                   "Dir:", gravityDir.x.toFixed(2), gravityDir.y.toFixed(2), gravityDir.z.toFixed(2),
+                   "Boost:", (speedDiff * boostFactor).toFixed(2));
+      }
     }
   }
   
-  // Apply the new velocity
+  // Apply the new velocity with wakeUp=true to ensure the body is active
   playerBody.value.setLinvel(newVel, true);
   
-  // Occasional debug logging
-  if (Math.random() < 0.01) {
-    console.log("Velocity:", 
+  // Debug logging
+  if (Math.random() < 0.03) {
+    console.log("Gravity velocity:", 
                 "X:", newVel.x.toFixed(2), 
                 "Y:", newVel.y.toFixed(2), 
                 "Z:", newVel.z.toFixed(2),
-                "Is grounded:", isGrounded.value);
+                "Speed:", Math.sqrt(newVel.x*newVel.x + newVel.y*newVel.y + newVel.z*newVel.z).toFixed(2),
+                "Grounded:", isGrounded.value);
   }
 };
 
-// Simplify handlePlayerMovement for kinematic body only
+// Add an explicit position log every second (for debugging)
+let lastDebugTime = 0;
+const updatePhysics = (deltaTime) => {
+  // Apply gravity to player
+  applyPointGravity();
+  
+  // Handle ground alignment when grounded
+  if (isGrounded.value && playerBody.value) {
+    // Get ground normal and related vectors
+    const { groundNormal, upVector } = getGroundNormal();
+    
+    // Align player with ground
+    alignPlayerWithGround(groundNormal, upVector);
+  }
+  
+  // Periodically log position for debugging
+  const currentTime = performance.now();
+  if (currentTime - lastDebugTime > 1000) { // Once per second
+    lastDebugTime = currentTime;
+    if (playerBody.value) {
+      const pos = playerBody.value.translation();
+      console.log(`Player position: Y=${pos.y.toFixed(2)}, Speed=${currentSpeed.value.toFixed(2)}, Grounded=${isGrounded.value}`);
+    }
+  }
+  
+  // Step the physics world with a fixed timestep for more stable physics
+  physicsWorld.value.step();
+  
+  // After physics step, get current velocity for debug info
+  if (playerBody.value) {
+    const vel = playerBody.value.linvel();
+    currentSpeed.value = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    
+    // When player should be falling but isn't, apply a push
+    if (!isGrounded.value && Math.abs(vel.y) < 1.0) {
+      console.warn("Player not falling fast enough - applying push");
+      // Force gravity direction velocity
+      const { gravityDir } = getGroundNormal();
+      playerBody.value.setLinvel({
+        x: vel.x + gravityDir.x * 5,
+        y: vel.y + gravityDir.y * 5,
+        z: vel.z + gravityDir.z * 5
+      }, true);
+    }
+  }
+};
+
+// Define frameCount here, used in animate
+let frameCount = 0;
+
+// Create line objects to visualize the foot rays
+const createRayVisualizations = () => {
+  // Create material for ray lines
+  const rayMaterial = new THREE.LineBasicMaterial({ 
+    color: 0xffff00, // Yellow color for rays
+    linewidth: 2
+  });
+  
+  // Create geometries for ray lines (will be updated during gameplay)
+  const rayGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, -1, 0) // Initial direction, will be updated
+  ]);
+  
+  // Create lines for each ray
+  leftRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
+  rightRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
+  centerRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
+  
+  // Add to scene
+  scene.value.add(leftRayLine.value);
+  scene.value.add(rightRayLine.value);
+  scene.value.add(centerRayLine.value);
+};
+
+// Update ray visualizations based on current foot positions
+const updateRayVisualizations = (leftFootPos, rightFootPos, centerFootPos, rayDir, rayLength) => {
+  if (!leftRayLine.value || !rightRayLine.value || !centerRayLine.value) return;
+  
+  // Convert rayDir to THREE.Vector3
+  const rayDirVector = new THREE.Vector3(rayDir.x, rayDir.y, rayDir.z);
+  
+  // Calculate end points
+  const leftRayEnd = leftFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
+  const rightRayEnd = rightFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
+  const centerRayEnd = centerFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
+  
+  // Update line geometries
+  leftRayLine.value.geometry.dispose();
+  leftRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
+    leftFootPos, leftRayEnd
+  ]);
+  
+  rightRayLine.value.geometry.dispose();
+  rightRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
+    rightFootPos, rightRayEnd
+  ]);
+  
+  centerRayLine.value.geometry.dispose();
+  centerRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
+    centerFootPos, centerRayEnd
+  ]);
+  
+  // Change color based on hit/miss
+  leftRayLine.value.material.color.set(leftFootHit.value !== null ? 0x00ff00 : 0xff0000);
+  rightRayLine.value.material.color.set(rightFootHit.value !== null ? 0x00ff00 : 0xff0000);
+  centerRayLine.value.material.color.set(centerFootHit.value !== null ? 0x00ff00 : 0xff0000);
+};
+
+// Fix handlePlayerMovement function - add proper variable declarations
 const handlePlayerMovement = (deltaTime) => {
   if (!playerBody.value || !started.value) return;
   
@@ -837,10 +1037,10 @@ const handlePlayerMovement = (deltaTime) => {
       ).normalize();
       
       // Scale by speed and delta
-      finalMoveVec = moveTangent.multiplyScalar(moveSpeed);
+      const finalMoveVec = moveTangent.multiplyScalar(moveSpeed);
       
       // For kinematic body, directly set velocity
-      finalVelocity = {
+      const finalVelocity = {
         x: finalMoveVec.x,
         y: currentVel.y, // Preserve existing vertical velocity
         z: finalMoveVec.z
@@ -898,37 +1098,46 @@ const handlePlayerMovement = (deltaTime) => {
   }
 };
 
-// Update startGame function
+// Improve startGame function with better error handling
 const startGame = () => {
-  console.log("Starting game...");
-  started.value = true;
-
   try {
-    // Try to request pointer lock, but don't depend on it to start the game
-    if (gameCanvas.value) {
-      gameCanvas.value.requestPointerLock();
-      
-      // Add event listener to handle pointer lock errors
-      document.addEventListener('pointerlockerror', (e) => {
-        console.warn('Pointer lock error, continuing without mouse control:', e);
-        // Continue with game anyway
-        if (!clock.running) {
-          clock.start();
-          animate();
-        }
-      }, { once: true });
-    } else {
-      console.warn("Game canvas not available for pointer lock");
+    console.log("Starting game...");
+    
+    // Check if game canvas is available
+    if (!gameCanvas.value) {
+      errorMessage.value = "Game canvas not found";
+      console.error(errorMessage.value);
+      return;
     }
+    
+    // Set started state
+    started.value = true;
+
+    // Try to request pointer lock
+    gameCanvas.value.requestPointerLock();
+      
+    // Add event listener for pointer lock errors
+    document.addEventListener('pointerlockerror', (e) => {
+      console.warn('Pointer lock error, continuing without mouse control:', e);
+      // Continue with game anyway
+      if (!clock.running) {
+        clock.start();
+        animate();
+      }
+    }, { once: true });
     
     // Always start the animation loop regardless of pointer lock status
     if (!clock.running) {
       clock.start();
+      console.log("Starting animation loop");
       animate();
     }
   } catch (e) {
+    errorMessage.value = "Error starting game: " + e.message;
     console.error("Error starting game:", e);
-    // Ensure game starts even if there's an error
+    
+    // Try to start the game anyway
+    started.value = true;
     if (!clock.running) {
       clock.start();
       animate();
@@ -936,69 +1145,7 @@ const startGame = () => {
   }
 };
 
-// Define frameCount here, used in animate
-let frameCount = 0;
-
-// Create line objects to visualize the foot rays
-const createRayVisualizations = () => {
-  // Create material for ray lines
-  const rayMaterial = new THREE.LineBasicMaterial({ 
-    color: 0xffff00, // Yellow color for rays
-    linewidth: 2
-  });
-  
-  // Create geometries for ray lines (will be updated during gameplay)
-  const rayGeometry = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(0, -1, 0) // Initial direction, will be updated
-  ]);
-  
-  // Create lines for each ray
-  leftRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
-  rightRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
-  centerRayLine.value = new THREE.Line(rayGeometry.clone(), rayMaterial);
-  
-  // Add to scene
-  scene.value.add(leftRayLine.value);
-  scene.value.add(rightRayLine.value);
-  scene.value.add(centerRayLine.value);
-};
-
-// Update ray visualizations based on current foot positions
-const updateRayVisualizations = (leftFootPos, rightFootPos, centerFootPos, rayDir, rayLength) => {
-  if (!leftRayLine.value || !rightRayLine.value || !centerRayLine.value) return;
-  
-  // Convert rayDir to THREE.Vector3
-  const rayDirVector = new THREE.Vector3(rayDir.x, rayDir.y, rayDir.z);
-  
-  // Calculate end points
-  const leftRayEnd = leftFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
-  const rightRayEnd = rightFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
-  const centerRayEnd = centerFootPos.clone().add(rayDirVector.clone().multiplyScalar(rayLength));
-  
-  // Update line geometries
-  leftRayLine.value.geometry.dispose();
-  leftRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
-    leftFootPos, leftRayEnd
-  ]);
-  
-  rightRayLine.value.geometry.dispose();
-  rightRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
-    rightFootPos, rightRayEnd
-  ]);
-  
-  centerRayLine.value.geometry.dispose();
-  centerRayLine.value.geometry = new THREE.BufferGeometry().setFromPoints([
-    centerFootPos, centerRayEnd
-  ]);
-  
-  // Change color based on hit/miss
-  leftRayLine.value.material.color.set(leftFootHit.value !== null ? 0x00ff00 : 0xff0000);
-  rightRayLine.value.material.color.set(rightFootHit.value !== null ? 0x00ff00 : 0xff0000);
-  centerRayLine.value.material.color.set(centerFootHit.value !== null ? 0x00ff00 : 0xff0000);
-};
-
-// Add the missing animate function
+// Improve animate function with better error handling
 const animate = () => {
   if (!started.value) return;
   
@@ -1006,6 +1153,12 @@ const animate = () => {
   requestAnimationFrame(animate);
   
   try {
+    // Clear any previous error message if things are working
+    if (errorMessage.value) {
+      console.log("Clearing previous error message");
+      errorMessage.value = '';
+    }
+    
     const deltaTime = Math.min(clock.getDelta(), 0.1);
     
     // Ensure all necessary components are initialized before proceeding
@@ -1052,6 +1205,7 @@ const animate = () => {
       renderer.value.render(scene.value, camera.value);
     }
   } catch (e) {
+    errorMessage.value = "Error in animation loop: " + e.message;
     console.error("Error in animation loop:", e);
     // Continue animation loop despite errors
   }
@@ -1060,30 +1214,6 @@ const animate = () => {
 // Add this variable near other declarations
 const lastGroundNormal = shallowRef(new THREE.Vector3(0, 1, 0));
 const rotationStabilityThreshold = 0.01; // Minimum angle change to apply rotation
-
-// Add the missing updatePhysics function
-const updatePhysics = (deltaTime) => {
-  // Apply gravity to player
-  applyPointGravity();
-  
-  // Handle ground alignment when grounded
-  if (isGrounded.value && playerBody.value) {
-    // Get ground normal and related vectors
-    const { groundNormal, upVector } = getGroundNormal();
-    
-    // Align player with ground
-    alignPlayerWithGround(groundNormal, upVector);
-  }
-  
-  // Step the physics world
-  physicsWorld.value.step();
-  
-  // After physics step, get current velocity for debug info
-  if (playerBody.value) {
-    const vel = playerBody.value.linvel();
-    currentSpeed.value = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
-  }
-};
 
 // Add function to align player with ground
 const alignPlayerWithGround = (normal, upVector) => {
@@ -1337,5 +1467,21 @@ html, body {
   background-color: rgba(0, 0, 0, 0.5);
   padding: 5px;
   border-radius: 4px;
+}
+
+.error-message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: rgba(200, 0, 0, 0.8);
+  color: white;
+  padding: 15px 20px;
+  border-radius: 5px;
+  font-family: Arial, sans-serif;
+  font-size: 16px;
+  max-width: 80%;
+  text-align: center;
+  z-index: 1000;
 }
 </style>
