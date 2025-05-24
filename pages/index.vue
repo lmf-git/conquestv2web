@@ -29,7 +29,7 @@ const isGrounded = ref(false);
 const playerPosition = ref(new THREE.Vector3());
 const isMoving = ref(false);
 const currentSpeed = ref(0);
-const isCameraDetached = ref(false); // Track if camera is detached
+const isCameraDetached = ref(false); // Re-add this line
 
 // THREE.js objects - use shallowRef to prevent reactivity issues
 const scene = shallowRef(null);
@@ -160,6 +160,172 @@ const getGroundNormal = () => {
   return { groundNormal, upVector, gravityDir, playerPos };
 };
 
+// Define the onResize function earlier in the file, before onMounted
+const onResize = () => {
+  if (!camera.value || !renderer.value) return;
+  
+  // Update camera aspect ratio
+  camera.value.aspect = window.innerWidth / window.innerHeight;
+  camera.value.updateProjectionMatrix();
+  
+  // Resize renderer
+  renderer.value.setSize(window.innerWidth, window.innerHeight);
+};
+
+// Add missing onMouseMove function before onMounted
+const onMouseMove = (event) => {
+  if (!started.value || document.pointerLockElement !== gameCanvas.value) return;
+  
+  // Mouse sensitivity - reduced for smoother control
+  const lookSensitivity = 0.001;
+  const groundTurnSensitivity = 0.0008;
+  
+  try {
+    // Update vertical camera rotation (pitch)
+    cameraRotation.value.x -= event.movementY * lookSensitivity;
+    
+    // Limit vertical look angle to avoid flipping
+    cameraRotation.value.x = Math.max(
+      -Math.PI / 2 + 0.01, 
+      Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
+    );
+    
+    // Handle horizontal rotation (yaw) based on grounded state
+    if (isGrounded.value && playerBody.value) {
+      // Only apply rotation if mouse movement is significant enough
+      if (Math.abs(event.movementX) > 1) {
+        // On ground, rotate the entire player body around the ground normal
+        const { groundNormal } = getGroundNormal();
+        
+        // Create rotation quaternion for horizontal mouse movement
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(
+          groundNormal, 
+          event.movementX * groundTurnSensitivity
+        );
+        
+        // Apply to player's physics body
+        const currentQuat = new THREE.Quaternion(
+          playerBody.value.rotation().x,
+          playerBody.value.rotation().y,
+          playerBody.value.rotation().z,
+          playerBody.value.rotation().w
+        );
+        currentQuat.premultiply(yawQuat);
+        
+        playerBody.value.setRotation(
+          { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
+          true
+        );
+        
+        // Update the last ground normal to prevent fighting between systems
+        lastGroundNormal.value.copy(groundNormal);
+      }
+      
+      // Reset camera's yaw since player body handles it
+      cameraRotation.value.y = 0;
+    } else {
+      // When airborne, store yaw in camera rotation
+      cameraRotation.value.y += event.movementX * lookSensitivity;
+    }
+  } catch (e) {
+    console.error("Error in mouse move:", e);
+  }
+};
+
+// Add missing onPointerLockChange function before onMounted
+const onPointerLockChange = () => {
+  if (document.pointerLockElement !== gameCanvas.value) {
+    // Pointer lock was exited
+    keys.forward = false;
+    keys.backward = false;
+    keys.left = false;
+    keys.right = false;
+    keys.jump = false;
+    keys.run = false;
+  }
+};
+
+// Add missing resetCameraForAirborne function
+const resetCameraForAirborne = () => {
+  // Save player's current yaw rotation before switching to camera-based rotation
+  if (player.value) {
+    // Extract yaw from player's current quaternion
+    const playerEuler = new THREE.Euler().setFromQuaternion(player.value.quaternion, 'YXZ');
+    // Set camera's yaw to match player's current direction
+    cameraRotation.value.y = playerEuler.y;
+  }
+};
+
+// Add missing projectVectorOntoPlane function
+const projectVectorOntoPlane = (vector, planeNormal) => {
+  const dot = vector.dot(planeNormal);
+  return vector.clone().sub(planeNormal.clone().multiplyScalar(dot));
+};
+
+// Add onKeyDown and onKeyUp functions before onMounted
+const onKeyDown = (event) => {
+  if (!started.value) return;
+  
+  switch (event.code) {
+    case 'KeyW':
+    case 'ArrowUp':
+      keys.forward = true;
+      break;
+    case 'KeyS':
+    case 'ArrowDown':
+      keys.backward = true;
+      break;
+    case 'KeyA':
+    case 'ArrowLeft':
+      keys.left = true;
+      break;
+    case 'KeyD':
+    case 'ArrowRight':
+      keys.right = true;
+      break;
+    case 'Space':
+      if (isGrounded.value) {
+        keys.jump = true;
+      }
+      break;
+    case 'ShiftLeft':
+      keys.run = true;
+      break;
+    case 'KeyO': // Add 'o' key handler
+      toggleCameraAttachment();
+      break;
+  }
+};
+
+const onKeyUp = (event) => {
+  if (!started.value) return;
+  
+  switch (event.code) {
+    case 'KeyW':
+    case 'ArrowUp':
+      keys.forward = false;
+      break;
+    case 'KeyS':
+    case 'ArrowDown':
+      keys.backward = false;
+      break;
+    case 'KeyA':
+    case 'ArrowLeft':
+      keys.left = false;
+      break;
+    case 'KeyD':
+    case 'ArrowRight':
+      keys.right = false;
+      break;
+    case 'Space':
+      keys.jump = false;
+      break;
+    case 'ShiftLeft':
+      keys.run = false;
+      break;
+  }
+};
+
 // Initialize the game
 onMounted(async () => {
   try {
@@ -186,18 +352,62 @@ onMounted(async () => {
 
 // Cleanup when component is destroyed
 onBeforeUnmount(() => {
+  // Stop animation loop first
+  started.value = false;
+  
+  // Clear event listeners
   window.removeEventListener('resize', onResize);
   document.removeEventListener('keydown', onKeyDown);
   document.removeEventListener('keyup', onKeyUp);
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('pointerlockchange', onPointerLockChange);
   
+  // Safely clean up Three.js resources
   if (renderer.value) {
-    renderer.value.dispose();
+    try {
+      // Remove the canvas element from the DOM
+      if (renderer.value.domElement && renderer.value.domElement.parentNode) {
+        renderer.value.domElement.parentNode.removeChild(renderer.value.domElement);
+      }
+      
+      // Dispose of the renderer
+      renderer.value.dispose();
+      renderer.value = null;
+    } catch (e) {
+      console.error("Error cleaning up renderer:", e);
+    }
   }
+  
+  // Clean up other resources
+  scene.value = null;
+  camera.value = null;
+  physicsWorld.value = null;
+  playerBody.value = null;
 });
 
-// Setup the 3D scene
+// Create stars in the scene
+const createStars = () => {
+  const starGeometry = new THREE.BufferGeometry();
+  const starMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.5,
+    sizeAttenuation: false
+  });
+  
+  const starVertices = [];
+  for (let i = 0; i < 10000; i++) {
+    const x = THREE.MathUtils.randFloatSpread(2000);
+    const y = THREE.MathUtils.randFloatSpread(2000);
+    const z = THREE.MathUtils.randFloatSpread(2000);
+    starVertices.push(x, y, z);
+  }
+  
+  starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+  const stars = new THREE.Points(starGeometry, starMaterial);
+  scene.value.add(stars);
+};
+
+// Modify the setupScene function to check DOM elements before manipulation
 const setupScene = () => {
   // Create Three.js scene
   scene.value = new THREE.Scene();
@@ -208,12 +418,19 @@ const setupScene = () => {
   camera.value = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.value.position.set(0, playerHeight, 0);
   
-  // Create renderer
+  // Create renderer with proper DOM element checks
   renderer.value = new THREE.WebGLRenderer({ antialias: true });
   renderer.value.setSize(window.innerWidth, window.innerHeight);
   renderer.value.setPixelRatio(window.devicePixelRatio);
   renderer.value.shadowMap.enabled = true;
-  gameCanvas.value.appendChild(renderer.value.domElement);
+  
+  // Add null check before appending to DOM
+  if (gameCanvas.value) {
+    gameCanvas.value.appendChild(renderer.value.domElement);
+  } else {
+    console.error("Game canvas element not found");
+    return; // Exit early if DOM element is missing
+  }
   
   // Add lights
   const ambientLight = new THREE.AmbientLight(0x444444);
@@ -270,58 +487,70 @@ const createPlanet = () => {
 };
 
 const createPlatform = () => {
-  // Create platform visuals
-  const platformWidth = 20;
-  const platformHeight = 1;
-  const platformDepth = 20;
+  // Create platform visuals - make it larger and more visible
+  const platformWidth = 40; // Increased from 20
+  const platformHeight = 2; // Increased from 1
+  const platformDepth = 40; // Increased from 20
   const platformGeometry = new THREE.BoxGeometry(platformWidth, platformHeight, platformDepth);
   const platformMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0x6688cc,
+    color: 0x3388ee, // Brighter blue color
     roughness: 0.5, 
-    metalness: 0.5
+    metalness: 0.5,
+    emissive: 0x112244 // Add slight emissive quality to make it more visible
   });
   
   platform.value = new THREE.Mesh(platformGeometry, platformMaterial);
-  platform.value.position.set(0, 20, 0);
+  // Position the platform higher and offset it slightly for better visibility
+  platform.value.position.set(0, 30, 10); 
   platform.value.castShadow = true;
   platform.value.receiveShadow = true;
   scene.value.add(platform.value);
   
-  // Create platform physics body
+  // Create platform physics body with matching position
   const platformBodyDesc = RAPIER.RigidBodyDesc.fixed();
-  platformBodyDesc.setTranslation(0, 20, 0);
+  platformBodyDesc.setTranslation(0, 30, 10);
   const platformBody = physicsWorld.value.createRigidBody(platformBodyDesc);
   
-  // Create platform collider
+  // Create platform collider with matching dimensions
   const platformColliderDesc = RAPIER.ColliderDesc.cuboid(
     platformWidth / 2,
     platformHeight / 2, 
     platformDepth / 2
   );
-  platformColliderDesc.setFriction(2.0); // Increased from 1.0 to 2.0 for better grip
-  platformColliderDesc.setRestitution(0.0); // No bounce
+  platformColliderDesc.setFriction(2.0);
+  platformColliderDesc.setRestitution(0.0);
   physicsWorld.value.createCollider(platformColliderDesc, platformBody);
+  
+  // Add debug lines to outline the platform
+  const edges = new THREE.EdgesGeometry(platformGeometry);
+  const edgesMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+  const wireframe = new THREE.LineSegments(edges, edgesMaterial);
+  platform.value.add(wireframe);
 };
 
 const createPlayer = () => {
-  // Create player physics body - spawn higher above platform
-  const playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(0, 50, 0)
-    .setLinearDamping(2.0) // Increased from 0.5 to 2.0 to reduce bounciness
-    .setAngularDamping(10.0)
+  // Create player physics body as KINEMATIC
+  const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
+    .setTranslation(0, 60, 0) // Start higher above the platform
     .setCcdEnabled(true);
   
   playerBody.value = physicsWorld.value.createRigidBody(playerBodyDesc);
   
-  // Add initial downward velocity to start falling immediately
-  playerBody.value.setLinvel({ x: 0, y: -1, z: 0 }, true); // Reduced initial velocity
+  // Verify kinematic status
+  console.log("Player is kinematic:", playerBody.value.isKinematic());
+  
+  // Give a stronger initial downward velocity to kickstart falling
+  playerBody.value.setLinvel({ x: 0, y: -10, z: 0 }, true); // Increased from -5 to -10
+  
+  // Log initial position
+  console.log("Player created at Y:", 60, "with initial velocity Y:", -10);
   
   // Create player collider (capsule shape)
   const playerColliderDesc = RAPIER.ColliderDesc.capsule(
     playerHeight / 2 - playerRadius,
     playerRadius
   );
-  playerColliderDesc.setFriction(2.5); // Increased from 1.5 to 2.5 for better ground grip
+  playerColliderDesc.setFriction(2.5);
   playerColliderDesc.setRestitution(0.0);
   physicsWorld.value.createCollider(playerColliderDesc, playerBody.value);
   
@@ -631,12 +860,19 @@ const updatePlayerTransform = () => {
     // Get position from physics body
     const position = playerBody.value.translation();
     
-    // Update player position
+    // Update player mesh position to match physics body
     player.value.position.set(position.x, position.y, position.z);
     
     // Get rotation from physics body
     const rotation = playerBody.value.rotation();
     player.value.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+    
+    // Log positions occasionally for debugging
+    if (Math.random() < 0.01) {
+      console.log("Physics body Y:", position.y.toFixed(2), 
+                  "Mesh Y:", player.value.position.y.toFixed(2),
+                  "Difference:", (position.y - player.value.position.y).toFixed(5));
+    }
     
     // Handle camera rotation with better state transitions
     if (isGrounded.value) {
@@ -656,45 +892,7 @@ const updatePlayerTransform = () => {
   }
 };
 
-// Improve the startGame function with better error handling
-const startGame = () => {
-  console.log("Starting game...");
-  started.value = true;
-
-  try {
-    // Try to request pointer lock, but don't depend on it to start the game
-    if (gameCanvas.value) {
-      gameCanvas.value.requestPointerLock();
-      
-      // Add event listener to handle pointer lock errors
-      document.addEventListener('pointerlockerror', (e) => {
-        console.warn('Pointer lock error, continuing without mouse control:', e);
-        // Continue with game anyway
-        if (!clock.running) {
-          clock.start();
-          animate();
-        }
-      }, { once: true });
-    } else {
-      console.warn("Game canvas not available for pointer lock");
-    }
-    
-    // Always start the animation loop regardless of pointer lock status
-    if (!clock.running) {
-      clock.start();
-      animate();
-    }
-  } catch (e) {
-    console.error("Error starting game:", e);
-    // Ensure game starts even if there's an error
-    if (!clock.running) {
-      clock.start();
-      animate();
-    }
-  }
-};
-
-// Keep only this one animate function
+// Modify the animate function to change the order of operations
 const animate = () => {
   if (!started.value) return;
   
@@ -710,13 +908,22 @@ const animate = () => {
       return;
     }
     
-    // First check ground contact
-    checkGrounded();
+    // Log initial positions in the first few frames to help with debugging
+    if (frameCount < 10) {
+      const playerPos = playerBody.value.translation();
+      const meshPos = player.value.position;
+      const platformPos = platform.value ? platform.value.position : null;
+      console.log(`Frame ${frameCount}: Physics at Y=${playerPos.y.toFixed(2)}, Mesh at Y=${meshPos.y.toFixed(2)}, Platform at Y=${platformPos ? platformPos.y : 'unknown'}`);
+      frameCount++;
+    }
     
-    // Then update physics simulation
+    // First update physics simulation
     updatePhysics(deltaTime);
     
-    // Then update player position and rotation
+    // Then check ground contact (after physics is updated)
+    checkGrounded();
+    
+    // Update player mesh position and rotation
     updatePlayerTransform();
     
     // Update camera position if detached
@@ -724,7 +931,7 @@ const animate = () => {
       updateDetachedCamera();
     }
     
-    // Then handle player movement
+    // Then handle player movement last so it can use the updated ground state
     handlePlayerMovement(deltaTime);
     
     // Update UI position display
@@ -744,243 +951,77 @@ const animate = () => {
   }
 };
 
-// Function to handle detached camera position
+// Add a function to update the detached camera
 const updateDetachedCamera = () => {
-  if (!camera.value || !player.value) return;
+  if (!isCameraDetached.value || !camera.value || !player.value) return;
   
-  // Calculate position behind and above player
-  const cameraOffset = new THREE.Vector3(0, 3, 8); // Above and behind
+  // Position camera behind and above the player
+  const playerPos = player.value.position.clone();
+  const detachedDistance = 10; // Distance from player
+  const detachedHeight = 5;   // Height above player
   
-  // Convert to world space accounting for player orientation
-  const targetPosition = player.value.position.clone();
+  // Get camera position based on player's forward direction
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.value.quaternion);
+  const backward = forward.clone().negate();
   
-  // Position camera to look at player
-  camera.value.position.copy(targetPosition.clone().add(cameraOffset));
+  // Set camera position behind and above player
+  camera.value.position.copy(playerPos)
+    .add(backward.multiplyScalar(detachedDistance))
+    .add(new THREE.Vector3(0, detachedHeight, 0));
   
-  // Make camera look at player
-  camera.value.lookAt(targetPosition);
+  // Look at player
+  camera.value.lookAt(playerPos);
 };
 
-// Toggle camera attachment with the 'o' key
+// Add the toggleCameraAttachment function
 const toggleCameraAttachment = () => {
+  if (!camera.value || !player.value || !scene.value) {
+    console.warn("Cannot toggle camera attachment - required components not initialized");
+    return;
+  }
+  
   isCameraDetached.value = !isCameraDetached.value;
+  console.log("Camera detached:", isCameraDetached.value);
   
   if (isCameraDetached.value) {
     // Detach camera from player
     const cameraWorldPos = new THREE.Vector3();
     camera.value.getWorldPosition(cameraWorldPos);
     
-    // Remove camera from player and add directly to scene
-    player.value.remove(camera.value);
-    scene.value.add(camera.value);
-    
-    // Keep camera at same position initially
-    camera.value.position.copy(cameraWorldPos);
-  } else {
-    // Reattach camera to player
-    scene.value.remove(camera.value);
-    player.value.add(camera.value);
-    
-    // Reset camera position relative to player
-    camera.value.position.set(0, playerHeight * 0.8, 0);
-    camera.value.rotation.set(cameraRotation.value.x, 0, 0);
-  }
-};
-
-// Add 'o' key handler for camera toggle
-const onKeyDown = (event) => {
-  if (!started.value) return;
-  
-  switch (event.code) {
-    case 'KeyW':
-    case 'ArrowUp':
-      keys.forward = true;
-      break;
-    case 'KeyS':
-    case 'ArrowDown':
-      keys.backward = true;
-      break;
-    case 'KeyA':
-    case 'ArrowLeft':
-      keys.left = true;
-      break;
-    case 'KeyD':
-    case 'ArrowRight':
-      keys.right = true;
-      break;
-    case 'Space':
-      if (isGrounded.value) {
-        keys.jump = true;
-      }
-      break;
-    case 'ShiftLeft':
-      keys.run = true;
-      break;
-    case 'KeyO':
-      toggleCameraAttachment();
-      break;
-  }
-};
-
-const onKeyUp = (event) => {
-  if (!started.value) return;
-  
-  switch (event.code) {
-    case 'KeyW':
-    case 'ArrowUp':
-      keys.forward = false;
-      break;
-    case 'KeyS':
-    case 'ArrowDown':
-      keys.backward = false;
-      break;
-    case 'KeyA':
-    case 'ArrowLeft':
-      keys.left = false;
-      break;
-    case 'KeyD':
-    case 'ArrowRight':
-      keys.right = false;
-      break;
-    case 'Space':
-      keys.jump = false;
-      break;
-    case 'ShiftLeft':
-      keys.run = false;
-      break;
-    case 'Escape':
-      if (document.pointerLockElement === gameCanvas.value) {
-        document.exitPointerLock();
-      }
-      break;
-  }
-};
-
-const onMouseMove = (event) => {
-  if (!started.value || document.pointerLockElement !== gameCanvas.value) return;
-  
-  // Mouse sensitivity - reduced for smoother control
-  const lookSensitivity = 0.001;
-  const groundTurnSensitivity = 0.0008;
-  
-  try {
-    // Update vertical camera rotation (pitch)
-    cameraRotation.value.x -= event.movementY * lookSensitivity;
-    
-    // Limit vertical look angle to avoid flipping
-    cameraRotation.value.x = Math.max(
-      -Math.PI / 2 + 0.01, 
-      Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
-    );
-    
-    // Handle horizontal rotation (yaw) based on grounded state
-    if (isGrounded.value && playerBody.value) {
-      // Only apply rotation if mouse movement is significant enough
-      if (Math.abs(event.movementX) > 1) {
-        // On ground, rotate the entire player body around the ground normal
-        const { groundNormal } = getGroundNormal();
-        
-        // Create rotation quaternion for horizontal mouse movement
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-          groundNormal, 
-          event.movementX * groundTurnSensitivity
-        );
-        
-        // Apply to player's physics body
-        const currentQuat = new THREE.Quaternion(
-          playerBody.value.rotation().x,
-          playerBody.value.rotation().y,
-          playerBody.value.rotation().z,
-          playerBody.value.rotation().w
-        );
-        currentQuat.premultiply(yawQuat);
-        
-        playerBody.value.setRotation(
-          { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
-          true
-        );
-        
-        // Update the last ground normal to prevent fighting between systems
-        lastGroundNormal.value.copy(groundNormal);
-      }
+    try {
+      // Remove camera from player and add directly to scene
+      player.value.remove(camera.value);
+      scene.value.add(camera.value);
       
-      // Reset camera's yaw since player body handles it
-      cameraRotation.value.y = 0;
-    } else {
-      // When airborne, store yaw in camera rotation
-      cameraRotation.value.y += event.movementX * lookSensitivity;
+      // Set initial detached camera position
+      updateDetachedCamera();
+    } catch (e) {
+      console.error("Error detaching camera:", e);
+      isCameraDetached.value = false; // Revert state change
     }
-  } catch (e) {
-    console.error("Error in mouse move:", e);
+  } else {
+    try {
+      // Reattach camera to player
+      scene.value.remove(camera.value);
+      player.value.add(camera.value);
+      
+      // Reset camera position relative to player
+      camera.value.position.set(0, playerHeight * 0.8, 0);
+      camera.value.rotation.set(cameraRotation.value.x, 0, 0);
+    } catch (e) {
+      console.error("Error reattaching camera:", e);
+      isCameraDetached.value = true; // Revert state change
+    }
   }
 };
 
-// Add the onResize function to handle window resizing
-const onResize = () => {
-  if (!camera.value || !renderer.value) return;
-  
-  // Update camera aspect ratio
-  camera.value.aspect = window.innerWidth / window.innerHeight;
-  camera.value.updateProjectionMatrix();
-  
-  // Resize renderer
-  renderer.value.setSize(window.innerWidth, window.innerHeight);
-};
-
-const onPointerLockChange = () => {
-  if (document.pointerLockElement !== gameCanvas.value) {
-    // Pointer lock was exited
-    keys.forward = false;
-    keys.backward = false;
-    keys.left = false;
-    keys.right = false;
-    keys.jump = false;
-    keys.run = false;
-  }
-};
-
-// Create stars in the scene
-const createStars = () => {
-  const starGeometry = new THREE.BufferGeometry();
-  const starMaterial = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.5,
-    sizeAttenuation: false
-  });
-  
-  const starVertices = [];
-  for (let i = 0; i < 10000; i++) {
-    const x = THREE.MathUtils.randFloatSpread(2000);
-    const y = THREE.MathUtils.randFloatSpread(2000);
-    const z = THREE.MathUtils.randFloatSpread(2000);
-    starVertices.push(x, y, z);
-  }
-  
-  starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
-  const stars = new THREE.Points(starGeometry, starMaterial);
-  scene.value.add(stars);
-};
-
-// Add helper to reset camera for airborne state
-const resetCameraForAirborne = () => {
-  // Save player's current yaw rotation before switching to camera-based rotation
-  if (player.value) {
-    // Extract yaw from player's current quaternion
-    const playerEuler = new THREE.Euler().setFromQuaternion(player.value.quaternion, 'YXZ');
-    // Set camera's yaw to match player's current direction
-    cameraRotation.value.y = playerEuler.y;
-  }
-};
-
-// Helper function to project a vector onto a plane defined by its normal
-const projectVectorOntoPlane = (vector, planeNormal) => {
-  const dot = vector.dot(planeNormal);
-  return vector.clone().sub(planeNormal.clone().multiplyScalar(dot));
-};
-
-// Add this function to apply gravity to the player
+// Enhance applyPointGravity with better debugging for visual mesh
 const applyPointGravity = () => {
   if (!playerBody.value) return;
+  
+  // We need to ensure gravity is applied whether grounded or not
+  // But reduce it when grounded to prevent sinking through ground
+  const gravityMultiplier = isGrounded.value ? 0.05 : 1.0;
   
   // Get player position
   const playerTranslation = playerBody.value.translation();
@@ -995,42 +1036,69 @@ const applyPointGravity = () => {
     .subVectors(gravity.center, playerPos)
     .normalize();
   
-  // Apply gravity force - stronger when not grounded
-  const gravityStrength = gravity.strength * (isGrounded.value ? 0.1 : 1.0);
-  const force = {
-    x: gravityDir.x * gravityStrength,
-    y: gravityDir.y * gravityStrength,
-    z: gravityDir.z * gravityStrength
+  // For kinematic bodies, we need to modify velocity directly
+  const currentVel = playerBody.value.linvel();
+  
+  // Log velocity for debugging
+  if (Math.random() < 0.02) {
+    console.log("Current velocity:", 
+                "X:", currentVel.x.toFixed(2), 
+                "Y:", currentVel.y.toFixed(2), 
+                "Z:", currentVel.z.toFixed(2),
+                "Is grounded:", isGrounded.value);
+  }
+  
+  // Increase gravity strength significantly for more noticeable falling
+  const gravitationalAcceleration = gravity.strength * 0.5; // Increased from 0.3 to 0.5
+  
+  // Compute new velocity by adding gravity acceleration
+  const newVel = {
+    x: currentVel.x + gravityDir.x * gravitationalAcceleration * gravityMultiplier,
+    y: currentVel.y + gravityDir.y * gravitationalAcceleration * gravityMultiplier,
+    z: currentVel.z + gravityDir.z * gravitationalAcceleration * gravityMultiplier
   };
   
-  // Use addForce to apply gravity
-  playerBody.value.addForce(force);
+  // Ensure there's a minimum falling speed when in air
+  if (!isGrounded.value) {
+    // Calculate current velocity in gravity direction
+    const velInGravDir = currentVel.x * gravityDir.x + 
+                          currentVel.y * gravityDir.y + 
+                          currentVel.z * gravityDir.z;
+    
+    // If falling slower than minimum speed, ensure we reach it
+    const minFallSpeed = 5.0; // Increased from 3.0 to 5.0
+    if (velInGravDir < minFallSpeed) {
+      const speedDiff = minFallSpeed - velInGravDir;
+      newVel.x += gravityDir.x * speedDiff * 0.3; // Increased from 0.2 to 0.3
+      newVel.y += gravityDir.y * speedDiff * 0.3;
+      newVel.z += gravityDir.z * speedDiff * 0.3;
+    }
+  }
+  
+  // Apply the new velocity
+  playerBody.value.setLinvel(newVel, true);
+  
+  // Force synchronization of mesh and physics body occasionally
+  if (Math.random() < 0.01 && player.value) {
+    const meshPos = player.value.position;
+    console.log("Force sync - Physics Y:", playerPos.y.toFixed(2), 
+                "Mesh Y:", meshPos.y.toFixed(2),
+                "Physics velocity Y:", currentVel.y.toFixed(2));
+  }
 };
 
-// Add the missing updatePhysics function
+// Remove the first version of updatePhysics and keep only this one
 const updatePhysics = (deltaTime) => {
-  // Apply point gravity to player
+  // Apply gravity to player if needed
   applyPointGravity();
   
-  // Force upright orientation when grounded to prevent rolling
+  // For kinematic bodies, we have direct control over orientation
   if (isGrounded.value && playerBody.value) {
     // Get ground normal and related vectors
     const { groundNormal, upVector } = getGroundNormal();
     
-    // Force align with ground normal
+    // For kinematic bodies, we can directly set the rotation
     alignPlayerWithGround(groundNormal, upVector);
-    
-    // Force zero angular velocity to prevent any rolling
-    playerBody.value.setAngvel({ x: 0, y: 0, z: 0 }, isMoving.value);
-    
-    // Apply a small stabilizing force to keep player pressed against the ground
-    // This helps prevent bouncing and sliding
-    const stabilizingForce = {
-      x: groundNormal.x * -0.8, // Reduced force to prevent jitter
-      y: groundNormal.y * -0.8, 
-      z: groundNormal.z * -0.8
-    };
-    playerBody.value.addForce(stabilizingForce);
   }
   
   // Step physics world
@@ -1043,7 +1111,7 @@ const updatePhysics = (deltaTime) => {
   }
 };
 
-// Add player movement handling function
+// Remove the first version of handlePlayerMovement and keep only this one
 const handlePlayerMovement = (deltaTime) => {
   if (!playerBody.value || !started.value) return;
   
@@ -1070,9 +1138,10 @@ const handlePlayerMovement = (deltaTime) => {
     const groundNormal = groundData.groundNormal;
     const upVector = groundData.upVector;
     
-    // When grounded, use player's forward direction
-    // When airborne, use camera's yaw direction
-    let finalMoveVec = new THREE.Vector3();
+    // Get current velocity from the body
+    const currentVel = playerBody.value.linvel();
+    let finalVelocity;
+    let finalMoveVec;
     
     if (isGrounded.value) {
       // Create a rotation basis that's aligned with the ground normal
@@ -1117,26 +1186,17 @@ const handlePlayerMovement = (deltaTime) => {
       ).normalize();
       
       // Scale by speed and delta
-      finalMoveVec = moveTangent.multiplyScalar(moveSpeed * deltaTime * 30);
+      finalMoveVec = moveTangent.multiplyScalar(moveSpeed);
       
-      // Add minimal upward component to prevent sliding
-      finalMoveVec.add(groundNormal.clone().multiplyScalar(0.05 * moveSpeed * deltaTime));
-      
-      // Get current velocity
-      const currentVel = playerBody.value.linvel();
-      
-      // Blend with current velocity but maintain more directional control
-      const newVel = {
-        x: finalMoveVec.x * 20 + currentVel.x * 0.1,
-        y: currentVel.y, // Preserve vertical velocity
-        z: finalMoveVec.z * 20 + currentVel.z * 0.1
+      // For kinematic body, directly set velocity
+      finalVelocity = {
+        x: finalMoveVec.x,
+        y: currentVel.y, // Preserve existing vertical velocity
+        z: finalMoveVec.z
       };
       
-      // Apply velocity directly
-      playerBody.value.setLinvel(newVel, true);
-      
       isMoving.value = true;
-      currentSpeed.value = finalMoveVec.length() / (deltaTime * 20);
+      currentSpeed.value = moveSpeed;
     } else {
       // Airborne movement
       // Use camera's yaw direction
@@ -1150,54 +1210,103 @@ const handlePlayerMovement = (deltaTime) => {
       // Reduced control in air
       finalMoveVec = moveVec.multiplyScalar(moveSpeed * 0.1 * deltaTime * 20);
       
-      // Apply impulse in air
-      const playerTranslation = playerBody.value.translation();
-      playerBody.value.applyImpulseAtPoint(
-        { x: finalMoveVec.x, y: finalMoveVec.y, z: finalMoveVec.z },
-        playerTranslation,
-        true
-      );
+      // For kinematic body in air, add movement to current velocity
+      finalVelocity = {
+        x: currentVel.x + finalMoveVec.x,
+        y: currentVel.y,
+        z: currentVel.z + finalMoveVec.z
+      };
+      
+      // Limit air velocity to prevent excessive speed
+      const horizontalSpeed = Math.sqrt(finalVelocity.x * finalVelocity.x + finalVelocity.z * finalVelocity.z);
+      if (horizontalSpeed > moveSpeed * 0.5) {
+        const scale = moveSpeed * 0.5 / horizontalSpeed;
+        finalVelocity.x *= scale;
+        finalVelocity.z *= scale;
+      }
       
       isMoving.value = true;
-      currentSpeed.value = finalMoveVec.length() / (deltaTime * 20);
+      currentSpeed.value = Math.sqrt(finalVelocity.x * finalVelocity.x + finalVelocity.z * finalVelocity.z);
     }
+    
+    // Apply the final velocity to the kinematic body
+    playerBody.value.setLinvel(finalVelocity, true);
   } else if (isGrounded.value && playerBody.value) {
-    // When no input but grounded, apply slight damping to stop sliding
+    // When not moving on ground, set horizontal velocity to zero
     const currentVel = playerBody.value.linvel();
-    if (Math.abs(currentVel.x) > 0.1 || Math.abs(currentVel.z) > 0.1) {
-      playerBody.value.setLinvel({
-        x: currentVel.x * 0.8,
-        y: currentVel.y,
-        z: currentVel.z * 0.8
-      }, true);
-    }
+    playerBody.value.setLinvel({
+      x: 0,
+      y: currentVel.y,
+      z: 0
+    }, true);
   }
   
-  // Handle jumping
+  // Handle jumping - for kinematic body
   if (keys.jump && isGrounded.value && playerBody.value) {
-    // Get player position and related vectors
-    const jumpData = getGroundNormal();
-    const jumpPlayerPos = jumpData.playerPos;
-    const jumpGravityDir = jumpData.gravityDir;
+    // Get jump direction (opposite to gravity)
+    const { gravityDir } = getGroundNormal();
+    const jumpDir = gravityDir.clone().negate();
     
-    const distToPlanet = jumpPlayerPos.distanceTo(gravity.center);
+    // Get current velocity
+    const currentVel = playerBody.value.linvel();
     
-    // Calculate jump direction (opposite to gravity)
-    const jumpDir = jumpGravityDir.clone().negate();
+    // Add jump velocity to current velocity
+    const jumpVel = {
+      x: currentVel.x + jumpDir.x * jumpForce,
+      y: currentVel.y + jumpDir.y * jumpForce,
+      z: currentVel.z + jumpDir.z * jumpForce
+    };
     
-    // Apply jump impulse - reduce force when on the planet to prevent glitching
-    const jumpMultiplier = distToPlanet < 110 ? 0.7 : 1.0;
-    
-    playerBody.value.applyImpulse({
-      x: jumpDir.x * jumpForce * jumpMultiplier,
-      y: jumpDir.y * jumpForce * jumpMultiplier,
-      z: jumpDir.z * jumpForce * jumpMultiplier
-    }, true);
+    // Apply the jump velocity
+    playerBody.value.setLinvel(jumpVel, true);
     
     // Prevent multiple jumps
     keys.jump = false;
   }
 };
+
+// Add the missing startGame function
+const startGame = () => {
+  console.log("Starting game...");
+  started.value = true;
+
+  try {
+    // Try to request pointer lock, but don't depend on it to start the game
+    if (gameCanvas.value) {
+      gameCanvas.value.requestPointerLock();
+      
+      // Add event listener to handle pointer lock errors
+      document.addEventListener('pointerlockerror', (e) => {
+        console.warn('Pointer lock error, continuing without mouse control:', e);
+        // Continue with game anyway
+        if (!clock.running) {
+          clock.start();
+          animate();
+        }
+      }, { once: true });
+    } else {
+      console.warn("Game canvas not available for pointer lock");
+    }
+    
+    // Always start the animation loop regardless of pointer lock status
+    if (!clock.running) {
+      clock.start();
+      animate();
+    }
+  } catch (e) {
+    console.error("Error starting game:", e);
+    // Ensure game starts even if there's an error
+    if (!clock.running) {
+      clock.start();
+      animate();
+    }
+  }
+};
+
+// Define frameCount here, before animate uses it
+let frameCount = 0;
+
+// ...existing code...
 </script>
 
 <style>
