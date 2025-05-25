@@ -158,93 +158,26 @@ const onResize = () => {
   renderer.value.setSize(window.innerWidth, window.innerHeight);
 };
 
-// Fix the onMouseMove function to correct inverted horizontal controls
+// Fix the onMouseMove function to only handle camera rotation and facing direction
 const onMouseMove = (event) => {
   if (!started.value || document.pointerLockElement !== gameCanvas.value) return;
   
   const lookSensitivity = 0.001;
-  const groundTurnSensitivity = 0.0008;
+  const yawSensitivity = 0.002;
   
   try {
-    if (isGrounded.value && playerBody.value) {
-      // When grounded - limited camera pitch, player body rotates around surface normal
-      
-      // Update camera pitch with limits
-      cameraRotation.value.x -= event.movementY * lookSensitivity;
-      cameraRotation.value.x = Math.max(
-        -Math.PI / 2 + 0.01, 
-        Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
-      );
-      
-      // Rotate player body around surface normal for yaw
-      const { groundNormal } = getGroundNormal();
-      
-      if (Math.abs(event.movementX) > 1) {
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-          groundNormal, 
-          -event.movementX * groundTurnSensitivity
-        );
-        
-        const currentQuat = new THREE.Quaternion(
-          playerBody.value.rotation().x,
-          playerBody.value.rotation().y,
-          playerBody.value.rotation().z,
-          playerBody.value.rotation().w
-        );
-        currentQuat.premultiply(yawQuat);
-        
-        playerBody.value.setRotation(
-          { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
-          true
-        );
-        
-        if (lastGroundNormal && lastGroundNormal.value) {
-          lastGroundNormal.value.copy(groundNormal);
-        }
-      }
-      
-      // Reset camera yaw when grounded
-      cameraRotation.value.y = 0;
-      cameraRotation.value.z = 0;
-    } else {
-      // When falling/airborne - full quaternion rotation of entire player
-      
-      // Calculate rotation changes
-      const pitchChange = -event.movementY * lookSensitivity;
-      const yawChange = -event.movementX * lookSensitivity;
-      
-      // Create rotation quaternions for pitch and yaw
-      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchChange);
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawChange);
-      
-      // Get current player rotation
-      const currentQuat = new THREE.Quaternion(
-        playerBody.value.rotation().x,
-        playerBody.value.rotation().y,
-        playerBody.value.rotation().z,
-        playerBody.value.rotation().w
-      );
-      
-      // Apply rotations in correct order: yaw first (around world up), then pitch (around local right)
-      // For local pitch rotation, we need to apply it in the player's local space
-      const localRight = new THREE.Vector3(1, 0, 0).applyQuaternion(currentQuat);
-      const localPitchQuat = new THREE.Quaternion().setFromAxisAngle(localRight, pitchChange);
-      
-      // Apply yaw around world Y axis, then pitch around local right axis
-      currentQuat.premultiply(yawQuat);
-      currentQuat.premultiply(localPitchQuat);
-      
-      // Update player body rotation
-      playerBody.value.setRotation(
-        { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
-        true
-      );
-      
-      // Reset camera rotation when airborne - player handles all rotation
-      cameraRotation.value.x = 0;
-      cameraRotation.value.y = 0;
-      cameraRotation.value.z = 0;
-    }
+    // Update camera pitch with limits
+    cameraRotation.value.x -= event.movementY * lookSensitivity;
+    cameraRotation.value.x = Math.max(
+      -Math.PI / 2 + 0.01, 
+      Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
+    );
+    
+    // Update camera yaw (left/right rotation)
+    cameraRotation.value.y -= event.movementX * yawSensitivity;
+    
+    // No need to update player body rotation since it's locked
+    // The player will be aligned to gravity/surface normal automatically
   } catch (e) {
     console.error("Error in mouse move:", e);
   }
@@ -439,6 +372,71 @@ const startGame = async () => {
   }
 };
 
+// Add missing setupScene function before onMounted
+const setupScene = () => {
+  try {
+    console.log("Setting up scene...");
+    
+    // Create Three.js scene
+    scene.value = new THREE.Scene();
+    scene.value.background = new THREE.Color(0x111122);
+    scene.value.fog = new THREE.Fog(0x111122, 100, 300);
+    
+    // Create camera
+    camera.value = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.value.position.set(0, playerHeight, 0);
+    
+    // Create renderer
+    renderer.value = new THREE.WebGLRenderer({ antialias: true });
+    renderer.value.setSize(window.innerWidth, window.innerHeight);
+    renderer.value.setPixelRatio(window.devicePixelRatio);
+    renderer.value.shadowMap.enabled = true;
+    renderer.value.shadowMap.type = THREE.PCFSoftShadowMap; // Better shadow quality
+    
+    // Add to DOM
+    if (gameCanvas.value) {
+      gameCanvas.value.appendChild(renderer.value.domElement);
+    } else {
+      console.error("Game canvas element not found");
+      throw new Error("Game canvas element not found");
+    }
+    
+    // Add lights
+    const ambientLight = new THREE.AmbientLight(0x444444, 0.4);
+    scene.value.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(50, 200, 100);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 2048;
+    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 500;
+    directionalLight.shadow.camera.left = -100;
+    directionalLight.shadow.camera.right = 100;
+    directionalLight.shadow.camera.top = 100;
+    directionalLight.shadow.camera.bottom = -100;
+    scene.value.add(directionalLight);
+    
+    // Create game objects if physics is ready
+    if (physicsWorld.value) {
+      createPlanet();
+      createPlatform();
+      createPlayer();
+      createRayVisualizations();
+    } else {
+      console.warn("Physics not initialized, skipping physics object creation");
+    }
+    
+    console.log("Scene setup complete!");
+    return true;
+  } catch (e) {
+    console.error("Error in setupScene:", e);
+    errorMessage.value = "Failed to set up scene: " + e.message;
+    return false;
+  }
+};
+
 // Modify the onMounted function to ensure proper initialization sequence
 onMounted(async () => {
   try {
@@ -511,6 +509,210 @@ onMounted(async () => {
   }
 }); // <-- This closing parenthesis was missing
 
+// Add missing createPlanet function
+const createPlanet = () => {
+  if (!scene.value || !physicsWorld.value) {
+    console.error("Scene or physics world not initialized");
+    return;
+  }
+  
+  try {
+    console.log("Creating planet-like terrain...");
+    
+    const planetRadius = 200;
+    const terrainHeight = 30; // Maximum height variation
+    const planetY = -250; // Planet center position
+    
+    // Create planet physics body first
+    const planetBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(0, planetY, 0);
+    
+    const planetBody = physicsWorld.value.createRigidBody(planetBodyDesc);
+    
+    // Create visual geometry - we'll use an icosahedron as base for more natural terrain
+    const subdivisions = 5; // Higher = smoother sphere
+    const icosahedronGeometry = new THREE.IcosahedronGeometry(planetRadius, subdivisions);
+    
+    // Get vertex positions and create height map
+    const positions = icosahedronGeometry.attributes.position.array;
+    const vertex = new THREE.Vector3();
+    
+    // Apply terrain displacement to each vertex
+    for (let i = 0; i < positions.length; i += 3) {
+      vertex.set(positions[i], positions[i + 1], positions[i + 2]);
+      
+      // Get the normalized direction from center
+      const dir = vertex.clone().normalize();
+      
+      // Calculate spherical coordinates for noise
+      const theta = Math.atan2(vertex.x, vertex.z);
+      const phi = Math.acos(vertex.y / vertex.length());
+      
+      // Generate height using multiple octaves of noise for realistic terrain
+      let height = 0;
+      
+      // Continental shelf - large scale features
+      height += Math.sin(theta * 1.5) * Math.cos(phi * 2) * 0.3;
+      height += Math.cos(theta * 1.2) * Math.sin(phi * 1.8) * 0.25;
+      
+      // Mountain ranges
+      const mountainNoise = Math.sin(theta * 4) * Math.cos(phi * 3);
+      if (mountainNoise > 0.3) {
+        height += mountainNoise * 0.5;
+      }
+      
+      // Hills and valleys
+      height += Math.sin(theta * 8) * Math.cos(phi * 6) * 0.15;
+      height += Math.cos(theta * 10) * Math.sin(phi * 8) * 0.1;
+      
+      // Small details
+      height += Math.sin(theta * 20) * Math.cos(phi * 15) * 0.05;
+      
+      // Create some flat areas (plains)
+      if (Math.abs(height) < 0.1) {
+        height *= 0.3; // Flatten areas that are already relatively flat
+      }
+      
+      // Normalize and apply height
+      height = (height + 1) * 0.5;
+      const finalRadius = planetRadius + (height * terrainHeight) - terrainHeight * 0.3; // Offset to have both valleys and peaks
+      
+      // Update vertex position
+      const newPos = dir.multiplyScalar(finalRadius);
+      positions[i] = newPos.x;
+      positions[i + 1] = newPos.y;
+      positions[i + 2] = newPos.z;
+    }
+    
+    // Update geometry
+    icosahedronGeometry.attributes.position.needsUpdate = true;
+    icosahedronGeometry.computeVertexNormals();
+    
+    // Create the visual mesh
+    const planetMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3a7c4a,
+      roughness: 0.9,
+      metalness: 0.0,
+      flatShading: true, // Gives a more terrain-like appearance
+      wireframe: false
+    });
+    
+    planet.value = new THREE.Mesh(icosahedronGeometry, planetMaterial);
+    planet.value.position.set(0, planetY, 0);
+    planet.value.receiveShadow = true;
+    planet.value.castShadow = true;
+    scene.value.add(planet.value);
+    
+    // Create collision mesh - handle both indexed and non-indexed geometries
+    let indices;
+    
+    // Check if geometry has an index
+    if (icosahedronGeometry.index) {
+      indices = icosahedronGeometry.index.array;
+    } else {
+      // Create indices for non-indexed geometry
+      // For non-indexed geometry, every 3 vertices form a triangle
+      const vertexCount = positions.length / 3;
+      indices = new Uint32Array(vertexCount);
+      for (let i = 0; i < vertexCount; i++) {
+        indices[i] = i;
+      }
+    }
+    
+    console.log("Creating planet collider with", positions.length / 3, "vertices and", indices.length / 3, "triangles");
+    
+    // Create a trimesh collider for the entire planet surface
+    const colliderVertices = new Float32Array(positions.length);
+    for (let i = 0; i < positions.length; i++) {
+      colliderVertices[i] = positions[i];
+    }
+    
+    // Create trimesh collider
+    const trimeshDesc = RAPIER.ColliderDesc.trimesh(
+      colliderVertices,
+      indices
+    )
+    .setFriction(0.8)
+    .setRestitution(0.1);
+    
+    const planetCollider = physicsWorld.value.createCollider(trimeshDesc, planetBody);
+    
+    if (debugInfo) {
+      debugInfo.planetHandle = planetCollider.handle;
+    }
+    
+    console.log("Planet terrain created with trimesh collider, handle:", planetCollider.handle);
+    
+    // Update gravity center to match planet center
+    gravity.center.set(0, planetY, 0);
+    
+    // Update player spawn position if player exists
+    if (playerBody.value) {
+      // Spawn player at the "north pole" of the planet
+      const spawnHeight = planetY + planetRadius + terrainHeight + 5;
+      playerBody.value.setTranslation({ x: 0, y: spawnHeight, z: 0 }, true);
+      console.log("Player respawned at height:", spawnHeight);
+    }
+    
+    // Add some visual features to the planet
+    addPlanetFeatures();
+    
+    return planet.value;
+  } catch (e) {
+    console.error("Error creating planet terrain:", e);
+    return null;
+  }
+};
+
+// Add function to create additional planet features
+const addPlanetFeatures = () => {
+  if (!scene.value || !planet.value) return;
+  
+  // Add some rocks or trees as child objects of the planet
+  const rockGeometry = new THREE.DodecahedronGeometry(2, 0);
+  const rockMaterial = new THREE.MeshStandardMaterial({
+    color: 0x666666,
+    roughness: 1,
+    metalness: 0
+  });
+  
+  // Place a few rocks randomly on the surface
+  for (let i = 0; i < 20; i++) {
+    const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+    
+    // Random position on sphere surface
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    
+    const x = Math.sin(phi) * Math.cos(theta);
+    const y = Math.cos(phi);
+    const z = Math.sin(phi) * Math.sin(theta);
+    
+    // Place at planet radius plus a bit
+    const radius = 205; // Slightly above average terrain
+    rock.position.set(x * radius, y * radius, z * radius);
+    
+    // Random rotation
+    rock.rotation.set(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+      Math.random() * Math.PI
+    );
+    
+    // Random scale
+    const scale = 0.5 + Math.random() * 1.5;
+    rock.scale.set(scale, scale, scale);
+    
+    rock.castShadow = true;
+    rock.receiveShadow = true;
+    
+    planet.value.add(rock);
+  }
+};
+
+// Add missing player collider handle to debugInfo initialization
+debugInfo.playerColliderHandle = null;
+
 // Rewrite the createPlayer function to use kinematic body for proper control
 const createPlayer = () => {
   if (!scene.value || !physicsWorld.value) {
@@ -521,30 +723,31 @@ const createPlayer = () => {
   try {
     console.log("Creating player...");
     
-    // Position player closer to platform - platform is at y=30, so spawn just above it
-    const spawnHeight = 33; // Just 3 units above the platform for better detection
+    // Position player above the planet surface
+    // Planet is at -250, radius 200, so surface is at -50, plus terrain height
+    const spawnHeight = 20; // Well above the planet surface
     
-    // Create player physics body as DYNAMIC with much lower damping
+    // Create player physics body as DYNAMIC with rotation constraints
     const playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, spawnHeight, 0)
-      .lockRotations() // Prevent the capsule from tipping over
-      .setLinearDamping(0.1) // Much lower damping for better movement
-      .setAngularDamping(1.0); // Full angular damping
+      .setLinearDamping(0.1)
+      .setAngularDamping(1.0)
+      .setCanSleep(false) // Prevent sleeping to ensure continuous collision detection
+      .lockRotations(); // Lock all rotations - we'll handle orientation manually
     
     playerBody.value = physicsWorld.value.createRigidBody(playerBodyDesc);
     
-    // Create player collider with improved settings
+    // Create player collider
     const playerColliderDesc = RAPIER.ColliderDesc.capsule(
       playerHeight / 2 - playerRadius,
       playerRadius
     )
-    .setFriction(0.0) // Zero friction to prevent sticking
+    .setFriction(0.0)
     .setRestitution(0.0)
     .setDensity(1.0)
     .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.DEFAULT)
-    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS); // Enable collision events
+    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     
-    // Create collider
     const playerCollider = physicsWorld.value.createCollider(playerColliderDesc, playerBody.value);
     console.log("Player collider created:", playerCollider.handle);
     
@@ -695,7 +898,7 @@ const checkGrounded = () => {
       
       return physicsWorld.value.castRay(
         footRay,
-        0.3, // Slightly longer distance for better surface detection
+        0.5, // Slightly longer distance for better surface detection
         true,
         RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
         undefined,
@@ -735,9 +938,44 @@ const checkGrounded = () => {
       lastGroundContact.value = currentTime;
     }
     
-    // Align player to surface when grounded
+    // Align player to surface when grounded AND adjust position so feet touch ground
     if (isGrounded.value && (centerFootHit.value || leftFootHit.value || rightFootHit.value)) {
       alignPlayerToSurface(gravityDir);
+      
+      // Adjust player position so feet are at contact point
+      const closestHit = centerFootHit.value || leftFootHit.value || rightFootHit.value;
+      if (closestHit && closestHit.toi !== undefined) {
+        // Calculate where the feet should be based on the ray hit
+        const hitPoint = new THREE.Vector3(
+          closestHit.point.x,
+          closestHit.point.y,
+          closestHit.point.z
+        );
+        
+        // Calculate the offset from current player center to where it should be
+        // The player center should be playerHeight/2 units away from the contact point
+        // in the opposite direction of gravity
+        const upDir = gravityDir.clone().multiplyScalar(-1);
+        const targetPlayerCenter = hitPoint.clone().add(upDir.clone().multiplyScalar(playerHeight * 0.5));
+        
+        // Apply a small offset to prevent sinking into terrain
+        targetPlayerCenter.add(upDir.clone().multiplyScalar(0.05));
+        
+        // Smoothly move player to correct position
+        const currentPos = new THREE.Vector3(playerTranslation.x, playerTranslation.y, playerTranslation.z);
+        const correction = targetPlayerCenter.clone().sub(currentPos);
+        
+        // Only apply correction if it's significant
+        if (correction.length() > 0.01 && correction.length() < 2.0) {
+          // Apply partial correction to avoid jitter
+          correction.multiplyScalar(0.3);
+          playerBody.value.setTranslation({
+            x: currentPos.x + correction.x,
+            y: currentPos.y + correction.y,
+            z: currentPos.z + correction.z
+          }, true);
+        }
+      }
     }
     
     // Log grounding state changes
@@ -763,7 +1001,7 @@ const checkGrounded = () => {
 
 // Add function to align player to surface normal
 const alignPlayerToSurface = (gravityDirection) => {
-  if (!playerBody.value) return;
+  if (!playerBody.value || !player.value) return;
   
   try {
     // Get the best surface normal from ray hits
@@ -811,49 +1049,47 @@ const alignPlayerToSurface = (gravityDirection) => {
       surfaceNormal = gravityDirection.clone().multiplyScalar(-1);
     }
     
-    // Calculate target orientation: align player's "up" with surface normal
-    const currentQuat = new THREE.Quaternion(
-      playerBody.value.rotation().x,
-      playerBody.value.rotation().y,
-      playerBody.value.rotation().z,
-      playerBody.value.rotation().w
-    );
+    // Since physics body rotation is locked, we only update the visual mesh rotation
+    // For capsule alignment: the capsule's Y-axis should align with the surface normal
     
-    // Get current forward direction (preserve yaw when possible)
-    const currentForward = new THREE.Vector3(0, 0, -1).applyQuaternion(currentQuat);
+    // Get camera's yaw rotation to determine facing direction
+    const yaw = cameraRotation.value.y;
     
-    // Project current forward onto the surface plane
-    const projectedForward = currentForward.clone()
-      .sub(surfaceNormal.clone().multiplyScalar(currentForward.dot(surfaceNormal)))
+    // Create a forward vector based on camera yaw
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw));
+    
+    // Project forward onto the surface plane
+    const projectedForward = forward.clone()
+      .sub(surfaceNormal.clone().multiplyScalar(forward.dot(surfaceNormal)))
       .normalize();
     
     // If projected forward is too small, use a default direction
     if (projectedForward.lengthSq() < 0.1) {
-      // Find a reasonable forward direction on the surface
-      const up = new THREE.Vector3(0, 1, 0);
-      projectedForward.crossVectors(surfaceNormal, up);
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      projectedForward.crossVectors(surfaceNormal, worldUp);
       if (projectedForward.lengthSq() < 0.1) {
         projectedForward.set(1, 0, 0).projectOnPlane(surfaceNormal);
       }
       projectedForward.normalize();
     }
     
-    // Create target rotation matrix
+    // Create rotation that aligns capsule Y-axis with surface normal
     const right = new THREE.Vector3().crossVectors(projectedForward, surfaceNormal).normalize();
-    const targetMatrix = new THREE.Matrix4().makeBasis(right, surfaceNormal, projectedForward.clone().multiplyScalar(-1));
-    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(targetMatrix);
+    const alignedForward = new THREE.Vector3().crossVectors(surfaceNormal, right).normalize();
     
-    // Smoothly interpolate to target orientation
-    const lerpFactor = 0.1; // Adjust for smoother/faster alignment
+    // Build rotation matrix
+    const rotationMatrix = new THREE.Matrix4();
+    rotationMatrix.makeBasis(right, surfaceNormal, alignedForward.multiplyScalar(-1));
+    
+    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+    
+    // Smoothly interpolate visual mesh rotation
+    const currentQuat = player.value.quaternion.clone();
+    const lerpFactor = 0.15;
     currentQuat.slerp(targetQuat, lerpFactor);
     
-    // Apply the rotation
-    playerBody.value.setRotation({
-      x: currentQuat.x,
-      y: currentQuat.y,
-      z: currentQuat.z,
-      w: currentQuat.w
-    }, true);
+    // Apply rotation only to visual mesh, not physics body
+    player.value.quaternion.copy(currentQuat);
     
     // Update last ground normal for reference
     if (lastGroundNormal && lastGroundNormal.value) {
@@ -987,26 +1223,18 @@ const updatePlayerTransform = () => {
     const position = playerBody.value.translation();
     player.value.position.set(position.x, position.y, position.z);
     
-    // Update player mesh rotation from physics body
-    const rotation = playerBody.value.rotation();
-    player.value.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+    // Don't copy rotation from physics body since it's locked
+    // The visual rotation is handled by alignPlayerToSurface
     
-    // Update facing direction for debug display
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.value.quaternion);
+    // Update facing direction based on camera yaw
+    const yaw = cameraRotation.value.y;
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw));
     playerFacing.value.copy(forward);
     
-    // Update camera rotation based on grounded state
-    if (isGrounded.value) {
-      // When grounded, apply camera pitch but no yaw/roll (player body handles yaw)
-      camera.value.rotation.x = cameraRotation.value.x;
-      camera.value.rotation.y = 0;
-      camera.value.rotation.z = 0;
-    } else {
-      // When airborne, camera follows player rotation exactly (no additional rotation)
-      camera.value.rotation.x = 0;
-      camera.value.rotation.y = 0;
-      camera.value.rotation.z = 0;
-    }
+    // Update camera rotation
+    camera.value.rotation.x = cameraRotation.value.x;
+    camera.value.rotation.y = cameraRotation.value.y;
+    camera.value.rotation.z = 0;
   } catch (e) {
     console.error("Error updating player transform:", e);
   }
@@ -1095,124 +1323,6 @@ const updateDetachedCamera = () => {
   camera.value.lookAt(playerWorldPos);
 };
 
-// Add missing setupScene function before onMounted
-const setupScene = () => {
-  try {
-    console.log("Setting up scene...");
-    
-    // Create Three.js scene
-    scene.value = new THREE.Scene();
-    scene.value.background = new THREE.Color(0x111122);
-    scene.value.fog = new THREE.Fog(0x111122, 100, 300);
-    
-    // Create camera
-    camera.value = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.value.position.set(0, playerHeight, 0);
-    
-    // Create renderer
-    renderer.value = new THREE.WebGLRenderer({ antialias: true });
-    renderer.value.setSize(window.innerWidth, window.innerHeight);
-    renderer.value.setPixelRatio(window.devicePixelRatio);
-    renderer.value.shadowMap.enabled = true;
-    renderer.value.shadowMap.type = THREE.PCFSoftShadowMap; // Better shadow quality
-    
-    // Add to DOM
-    if (gameCanvas.value) {
-      gameCanvas.value.appendChild(renderer.value.domElement);
-    } else {
-      console.error("Game canvas element not found");
-      throw new Error("Game canvas element not found");
-    }
-    
-    // Add lights
-    const ambientLight = new THREE.AmbientLight(0x444444, 0.4);
-    scene.value.add(ambientLight);
-    
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(50, 200, 100);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
-    directionalLight.shadow.camera.near = 0.5;
-    directionalLight.shadow.camera.far = 500;
-    directionalLight.shadow.camera.left = -100;
-    directionalLight.shadow.camera.right = 100;
-    directionalLight.shadow.camera.top = 100;
-    directionalLight.shadow.camera.bottom = -100;
-    scene.value.add(directionalLight);
-    
-    // Create game objects if physics is ready
-    if (physicsWorld.value) {
-      createPlanet();
-      createPlatform(); // This will now also create wall and ramp
-      createPlayer();
-      createRayVisualizations();
-    } else {
-      console.warn("Physics not initialized, skipping physics object creation");
-    }
-    
-    console.log("Scene setup complete!");
-    return true;
-  } catch (e) {
-    console.error("Error in setupScene:", e);
-    errorMessage.value = "Failed to set up scene: " + e.message;
-    return false;
-  }
-};
-
-// Add missing createPlanet function
-const createPlanet = () => {
-  if (!scene.value || !physicsWorld.value) {
-    console.error("Scene or physics world not initialized");
-    return;
-  }
-  
-  try {
-    console.log("Creating planet...");
-    
-    const planetRadius = 200;
-    const planetGeometry = new THREE.SphereGeometry(planetRadius, 64, 64);
-    const planetMaterial = new THREE.MeshStandardMaterial({
-      color: 0x3366cc,
-      roughness: 0.8,
-      metalness: 0.2,
-    });
-    
-    planet.value = new THREE.Mesh(planetGeometry, planetMaterial);
-    planet.value.position.set(0, -planetRadius - 30, 0);
-    planet.value.receiveShadow = true;
-    scene.value.add(planet.value);
-    
-    const planetBodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(
-        planet.value.position.x,
-        planet.value.position.y,
-        planet.value.position.z
-      );
-    
-    const planetBody = physicsWorld.value.createRigidBody(planetBodyDesc);
-    const planetColliderDesc = RAPIER.ColliderDesc.ball(planetRadius)
-      .setFriction(0.8)
-      .setRestitution(0.2);
-    
-    const planetCollider = physicsWorld.value.createCollider(planetColliderDesc, planetBody);
-    
-    if (debugInfo) {
-      debugInfo.planetHandle = planetCollider.handle;
-    }
-    
-    console.log("Planet created successfully");
-    
-    // Update gravity center to match planet position
-    gravity.center.copy(planet.value.position);
-    
-    return planet.value;
-  } catch (e) {
-    console.error("Error creating planet:", e);
-    return null;
-  }
-};
-
 // Add missing createPlatform function
 const createPlatform = () => {
   if (!scene.value || !physicsWorld.value) {
@@ -1265,130 +1375,9 @@ const createPlatform = () => {
     
     console.log("Platform created successfully at position:", platform.value.position, "with collider handle:", platformCollider.handle);
     
-    // Create wall on one side of the platform
-    createWall();
-    
-    // Create ramp on another side of the platform
-    createRamp();
-    
     return platform.value;
   } catch (e) {
     console.error("Error creating platform:", e);
-    return null;
-  }
-};
-
-// Add createWall function
-const createWall = () => {
-  if (!scene.value || !physicsWorld.value) {
-    console.error("Scene or physics world not initialized for wall");
-    return;
-  }
-  
-  try {
-    console.log("Creating wall...");
-    
-    const wallWidth = 20;
-    const wallHeight = 8;
-    const wallDepth = 2;
-    
-    const wallGeometry = new THREE.BoxGeometry(wallWidth, wallHeight, wallDepth);
-    const wallMaterial = new THREE.MeshStandardMaterial({
-      color: 0x666666,
-      roughness: 0.8,
-      metalness: 0.1
-    });
-    
-    const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-    // Position wall at the edge of the platform (north side)
-    wall.position.set(0, 30 + (wallHeight / 2) + 1.5, 20); // 20 units north of platform center
-    wall.receiveShadow = true;
-    wall.castShadow = true;
-    scene.value.add(wall);
-    
-    // Create physics body for wall
-    const wallBodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(wall.position.x, wall.position.y, wall.position.z);
-    
-    const wallBody = physicsWorld.value.createRigidBody(wallBodyDesc);
-    const wallColliderDesc = RAPIER.ColliderDesc.cuboid(
-      wallWidth / 2,
-      wallHeight / 2,
-      wallDepth / 2
-    )
-    .setFriction(0.8)
-    .setRestitution(0.1);
-    
-    const wallCollider = physicsWorld.value.createCollider(wallColliderDesc, wallBody);
-    
-    if (debugInfo) {
-      debugInfo.wallHandle = wallCollider.handle;
-    }
-    
-    console.log("Wall created successfully at position:", wall.position);
-    return wall;
-  } catch (e) {
-    console.error("Error creating wall:", e);
-    return null;
-  }
-};
-
-// Add createRamp function
-const createRamp = () => {
-  if (!scene.value || !physicsWorld.value) {
-    console.error("Scene or physics world not initialized for ramp");
-    return;
-  }
-  
-  try {
-    console.log("Creating ramp...");
-    
-    const rampWidth = 12;
-    const rampHeight = 6;
-    const rampDepth = 15;
-    
-    const rampGeometry = new THREE.BoxGeometry(rampWidth, rampHeight, rampDepth);
-    const rampMaterial = new THREE.MeshStandardMaterial({
-      color: 0x999944,
-      roughness: 0.9,
-      metalness: 0.0
-    });
-    
-    const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
-    // Position ramp lower and closer to platform edge for easier access
-    ramp.position.set(15, 30 - 1, 0); // Moved closer (15 instead of 18) and lowered by 1 unit
-    
-    // Rotate the ramp to create a much gentler incline (8 degrees instead of 15)
-    ramp.rotation.z = -Math.PI / 22.5; // About 8 degrees (much gentler slope)
-    
-    ramp.receiveShadow = true;
-    ramp.castShadow = true;
-    scene.value.add(ramp);
-    
-    // Create physics body for ramp
-    const rampBodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(ramp.position.x, ramp.position.y, ramp.position.z)
-      .setRotation({ x: 0, y: 0, z: -Math.PI / 22.5, w: Math.cos(Math.PI / 45) }); // Convert rotation to quaternion
-    
-    const rampBody = physicsWorld.value.createRigidBody(rampBodyDesc);
-    const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
-      rampWidth / 2,
-      rampHeight / 2,
-      rampDepth / 2
-    )
-    .setFriction(0.3) // Much lower friction for easier climbing
-    .setRestitution(0.0); // No bounce to prevent sliding back
-    
-    const rampCollider = physicsWorld.value.createCollider(rampColliderDesc, rampBody);
-    
-    if (debugInfo) {
-      debugInfo.rampHandle = rampCollider.handle;
-    }
-    
-    console.log("Ramp created successfully at position:", ramp.position, "with low friction:", 0.3);
-    return ramp;
-  } catch (e) {
-    console.error("Error creating ramp:", e);
     return null;
   }
 };
@@ -1536,7 +1525,7 @@ const handleAllMovement = (deltaTime) => {
     
     // Calculate distance for gravity falloff (optional)
     const distanceToPlanet = playerPos.distanceTo(gravity.center);
-    const gravityStrength = gravity.strength; // Could add distance falloff here: / (distanceToPlanet * distanceToPlanet)
+    const gravityStrength = gravity.strength;
     
     // Apply custom gravity force
     const gravityForce = gravityDir.clone().multiplyScalar(gravityStrength * deltaTime);
@@ -1566,18 +1555,21 @@ const handleAllMovement = (deltaTime) => {
     isMoving.value = moveLength > 0;
     currentSpeed.value = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
     
-    // Get player's current rotation quaternion
-    const playerQuat = new THREE.Quaternion(
-      playerBody.value.rotation().x,
-      playerBody.value.rotation().y,
-      playerBody.value.rotation().z,
-      playerBody.value.rotation().w
-    );
+    // Calculate movement direction based on camera yaw
+    const yaw = cameraRotation.value.y;
     
-    // Calculate movement direction relative to player's facing
-    // Forward is negative Z in local space, Right is positive X in local space
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat);
+    // Calculate forward and right vectors based on camera yaw
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw));
+    const right = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw));
+    
+    // If grounded, project movement onto surface plane
+    if (isGrounded.value && lastGroundNormal.value) {
+      const surfaceNormal = lastGroundNormal.value;
+      
+      // Project forward and right onto the surface plane
+      forward.projectOnPlane(surfaceNormal).normalize();
+      right.projectOnPlane(surfaceNormal).normalize();
+    }
     
     // Calculate final movement vector in world space
     const moveDir = new THREE.Vector3();
@@ -1589,28 +1581,29 @@ const handleAllMovement = (deltaTime) => {
     let newVelY = velocity.y + gravityForce.y;
     let newVelZ = velocity.z + gravityForce.z;
     
-    // Apply movement forces - use impulses instead of direct velocity for better physics
+    // Apply movement forces
     if (isGrounded.value) {
-      // Ground movement - apply impulses for more responsive control
-      const groundAccel = 50.0; // Acceleration on ground
+      // Ground movement
+      const groundAccel = 50.0;
       newVelX += moveDir.x * groundAccel * deltaTime;
+      newVelY += moveDir.y * groundAccel * deltaTime; // Include Y for slopes
       newVelZ += moveDir.z * groundAccel * deltaTime;
       
       // Apply ground friction when not moving
       if (moveLength === 0) {
-        newVelX *= 0.8; // Ground friction
+        newVelX *= 0.8;
+        newVelY *= 0.95; // Less friction on Y to allow sliding on slopes
         newVelZ *= 0.8;
       }
       
-      // Clamp to max speed (but don't limit gravity component)
-      const horizontalVel = new THREE.Vector3(newVelX, 0, newVelZ);
-      const gravityComponent = new THREE.Vector3(gravityForce.x, 0, gravityForce.z);
-      const movementVel = horizontalVel.clone().sub(gravityComponent);
-      
-      if (movementVel.length() > speed) {
-        movementVel.normalize().multiplyScalar(speed);
-        newVelX = movementVel.x + gravityComponent.x;
-        newVelZ = movementVel.z + gravityComponent.z;
+      // Clamp to max speed
+      const vel = new THREE.Vector3(newVelX, newVelY, newVelZ);
+      const velMagnitude = vel.length();
+      if (velMagnitude > speed * 1.5) { // Allow some overspeed
+        vel.normalize().multiplyScalar(speed * 1.5);
+        newVelX = vel.x;
+        newVelY = vel.y;
+        newVelZ = vel.z;
       }
     } else {
       // Air movement - reduced control
