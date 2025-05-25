@@ -646,13 +646,8 @@ const createPlanet = () => {
     // Update gravity center to match planet center
     gravity.center.set(0, planetY, 0);
     
-    // Update player spawn position if player exists
-    if (playerBody.value) {
-      // Spawn player at the "north pole" of the planet
-      const spawnHeight = planetY + planetRadius + terrainHeight + 5;
-      playerBody.value.setTranslation({ x: 0, y: spawnHeight, z: 0 }, true);
-      console.log("Player respawned at height:", spawnHeight);
-    }
+    // Don't override player spawn position here - let the platform be the spawn area
+    // Remove the player respawn code from createPlanet
     
     // Add some visual features to the planet
     addPlanetFeatures();
@@ -723,9 +718,9 @@ const createPlayer = () => {
   try {
     console.log("Creating player...");
     
-    // Position player above the planet surface
-    // Planet is at -250, radius 200, so surface is at -50, plus terrain height
-    const spawnHeight = 20; // Well above the planet surface
+    // Position player above the platform
+    // Platform is at y=30 with height 3, so surface is at y=31.5
+    const spawnHeight = 35; // Spawn 3.5 units above platform surface
     
     // Create player physics body as DYNAMIC with rotation constraints
     const playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
