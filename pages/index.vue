@@ -1012,15 +1012,16 @@ const updateDetachedCamera = () => {
   const cameraDistance = 15; // Distance from player
   const cameraHeight = 8;   // Height above player
   
-  // Update camera position based on key input for camera control
-  if (keys.left) {
-    // Orbit left
-    detachedCameraAngle.value += 0.02;
+  // Update camera position based on WASD input for camera control (only when detached)
+  if (keys.forward) {
+    // Move camera closer
+    detachedCameraAngle.value += 0;
   }
-  if (keys.right) {
-    // Orbit right
-    detachedCameraAngle.value -= 0.02;
+  if (keys.backward) {
+    // Move camera farther
+    detachedCameraAngle.value += 0;
   }
+  // Remove A/D camera controls - these should only be for movement
   
   // Calculate camera position on a circle around player
   const cameraX = playerWorldPos.x + Math.sin(detachedCameraAngle.value) * cameraDistance;
@@ -1480,31 +1481,31 @@ const handleAllMovement = (deltaTime) => {
     const gravityForce = gravityDir.clone().multiplyScalar(gravityStrength * deltaTime);
     
     // Calculate movement input
-    let moveX = 0;
-    let moveZ = 0;
+    let moveForward = 0;
+    let moveRight = 0;
     
-    if (keys.forward) moveZ -= 1;
-    if (keys.backward) moveZ += 1;
-    if (keys.left) moveX -= 1;
-    if (keys.right) moveX += 1;
+    if (keys.forward) moveForward += 1;
+    if (keys.backward) moveForward -= 1;
+    if (keys.left) moveRight -= 1;
+    if (keys.right) moveRight += 1;
     
     // Normalize movement vector
-    const moveLength = Math.sqrt(moveX * moveX + moveZ * moveZ);
+    const moveLength = Math.sqrt(moveForward * moveForward + moveRight * moveRight);
     if (moveLength > 0) {
-      moveX /= moveLength;
-      moveZ /= moveLength;
+      moveForward /= moveLength;
+      moveRight /= moveLength;
     }
     
     // Apply speed
     const speed = keys.run ? runSpeed : walkSpeed;
-    moveX *= speed;
-    moveZ *= speed;
+    moveForward *= speed;
+    moveRight *= speed;
     
     // Update isMoving and currentSpeed for UI
     isMoving.value = moveLength > 0;
     currentSpeed.value = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
     
-    // Get player's forward and right vectors
+    // Get player's current rotation quaternion
     const playerQuat = new THREE.Quaternion(
       playerBody.value.rotation().x,
       playerBody.value.rotation().y,
@@ -1512,14 +1513,15 @@ const handleAllMovement = (deltaTime) => {
       playerBody.value.rotation().w
     );
     
-    // Calculate movement direction in world space
+    // Calculate movement direction relative to player's facing
+    // Forward is negative Z in local space, Right is positive X in local space
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat);
     
-    // Calculate final movement vector
+    // Calculate final movement vector in world space
     const moveDir = new THREE.Vector3();
-    moveDir.addScaledVector(forward, moveZ);
-    moveDir.addScaledVector(right, moveX);
+    moveDir.addScaledVector(forward, moveForward);
+    moveDir.addScaledVector(right, moveRight);
     
     // Start with current velocity and apply planet gravity
     let newVelX = velocity.x + gravityForce.x;
