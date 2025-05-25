@@ -97,7 +97,7 @@ const keys = reactive({
 // Physics settings
 const gravity = reactive({
   center: new THREE.Vector3(0, -230, 0), // Planet center position
-  strength: 500  // Gravity force strength
+  strength: 50  // Reduced from 500 to 50 for more manageable gravity
 });
 
 // Initialize debugInfo as a reactive object to store debugging information
@@ -111,42 +111,34 @@ const debugInfo = reactive({
   colliderCount: 0
 });
 
-// Modify the utility function to get ground normal to use averaged normals
+// Modify the utility function to get ground normal to use planet-centered gravity
 const getGroundNormal = () => {
-  // For simple platform testing, use the hit from centerFootHit if available
-  if (centerFootHit.value && centerFootHit.value.normal) {
-    const groundNormal = new THREE.Vector3(
-      centerFootHit.value.normal.x,
-      centerFootHit.value.normal.y,
-      centerFootHit.value.normal.z
-    );
-    
-    // For debugging, let's use simple up vector initially
-    const upVector = new THREE.Vector3(0, 1, 0);
-    const gravityDir = new THREE.Vector3(0, -1, 0);
-    
-    // Get player position
-    const playerTranslation = playerBody.value.translation();
-    const playerPos = new THREE.Vector3(
-      playerTranslation.x,
-      playerTranslation.y,
-      playerTranslation.z
-    );
-    
-    return { groundNormal, upVector, gravityDir, playerPos };
-  }
-  
-  // Default fallback
-  const groundNormal = new THREE.Vector3(0, 1, 0);
-  const upVector = new THREE.Vector3(0, 1, 0);
-  const gravityDir = new THREE.Vector3(0, -1, 0);
-  
+  // Get player position
   const playerTranslation = playerBody.value.translation();
   const playerPos = new THREE.Vector3(
     playerTranslation.x,
     playerTranslation.y,
     playerTranslation.z
   );
+  
+  // Calculate gravity direction from planet center
+  const gravityDir = new THREE.Vector3()
+    .subVectors(gravity.center, playerPos)
+    .normalize();
+  
+  // Use surface normal from ray hits if available
+  let groundNormal = gravityDir.clone().multiplyScalar(-1); // Default to opposite of gravity
+  
+  if (centerFootHit.value && centerFootHit.value.normal) {
+    groundNormal = new THREE.Vector3(
+      centerFootHit.value.normal.x,
+      centerFootHit.value.normal.y,
+      centerFootHit.value.normal.z
+    );
+  }
+  
+  // Up vector is the ground normal
+  const upVector = groundNormal.clone();
   
   return { groundNormal, upVector, gravityDir, playerPos };
 };
@@ -594,7 +586,10 @@ const checkGrounded = () => {
     
     // Ground detection based on collision events and velocity
     const currentTime = performance.now();
-    const velocity = playerBody.value.linvel();
+    const velocityRapier = playerBody.value.linvel();
+    
+    // Convert RAPIER velocity to THREE.js Vector3
+    const velocity = new THREE.Vector3(velocityRapier.x, velocityRapier.y, velocityRapier.z);
     
     // Get player position for ray casting
     const playerTranslation = playerBody.value.translation();
@@ -604,8 +599,13 @@ const checkGrounded = () => {
       playerTranslation.z
     );
     
-    // Ray direction for gravity orientation
-    rayDir.value = new THREE.Vector3(0, -1, 0);
+    // Calculate gravity direction from planet center to player for ray casting
+    const gravityDir = new THREE.Vector3()
+      .subVectors(gravity.center, playerPos)
+      .normalize();
+    
+    // Update ray direction to match gravity
+    rayDir.value.copy(gravityDir);
     
     // Update foot positions for ray casting
     const playerQuat = new THREE.Quaternion(
@@ -627,7 +627,7 @@ const checkGrounded = () => {
     rightFootPos.value.copy(playerPos).add(rightOffset);
     centerFootPos.value.copy(playerPos).add(centerOffset);
     
-    // Cast rays for grounding detection
+    // Cast rays for grounding detection using gravity direction
     const castGroundingRay = (footPos) => {
       const footRay = new RAPIER.Ray(
         { x: footPos.x, y: footPos.y, z: footPos.z },
@@ -636,7 +636,7 @@ const checkGrounded = () => {
       
       return physicsWorld.value.castRay(
         footRay,
-        0.2, // Short distance for grounding detection
+        0.3, // Slightly longer distance for better surface detection
         true,
         RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
         undefined,
@@ -658,28 +658,30 @@ const checkGrounded = () => {
     // Determine grounding based on multiple criteria
     const hasGroundCollisions = groundCollisions.value.size > 0;
     const hasRayHits = leftFootHit.value || rightFootHit.value || centerFootHit.value;
-    const lowDownwardVelocity = velocity.y > -2.0; // Not falling fast
+    const lowDownwardVelocity = velocity.dot(gravityDir) < 2.0; // Check velocity relative to gravity
     const recentGroundContact = (currentTime - lastGroundContact.value) < 200; // 200ms grace period
     
-    // We're grounded if:
-    // 1. We have active collisions AND low velocity, OR
-    // 2. We have ray hits to ground AND low velocity, OR
-    // 3. We had recent ground contact AND very low velocity
+    // We're grounded if we have collisions or ray hits with appropriate velocity
     isGrounded.value = (hasGroundCollisions && lowDownwardVelocity) || 
                       (hasRayHits && lowDownwardVelocity) ||
-                      (recentGroundContact && velocity.y > -0.5);
+                      (recentGroundContact && Math.abs(velocity.dot(gravityDir)) < 0.5);
     
     // If we have collisions or ray hits, update last ground contact time
     if (hasGroundCollisions || hasRayHits) {
       lastGroundContact.value = currentTime;
     }
     
+    // Align player to surface when grounded
+    if (isGrounded.value && (centerFootHit.value || leftFootHit.value || rightFootHit.value)) {
+      alignPlayerToSurface(gravityDir);
+    }
+    
     // Log grounding state changes
     if (isGrounded.value !== wasGrounded.value) {
       if (isGrounded.value) {
-        console.log("Player became grounded - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits, "Vel Y:", velocity.y.toFixed(2));
+        console.log("Player became grounded - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits);
       } else {
-        console.log("Player became airborne - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits, "Vel Y:", velocity.y.toFixed(2));
+        console.log("Player became airborne - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits);
       }
     }
     
@@ -687,12 +689,115 @@ const checkGrounded = () => {
     if (frameCount.value % 60 === 0) {
       console.log("Ground check - Collisions:", groundCollisions.value.size, 
                   "Ray hits:", hasRayHits, 
-                  "Grounded:", isGrounded.value, 
-                  "Vel Y:", velocity.y.toFixed(2),
+                  "Grounded:", isGrounded.value,
                   "Player pos:", playerPos.x.toFixed(1), playerPos.y.toFixed(1), playerPos.z.toFixed(1));
     }
   } catch (e) {
     console.error("Error checking grounded state:", e);
+  }
+};
+
+// Add function to align player to surface normal
+const alignPlayerToSurface = (gravityDirection) => {
+  if (!playerBody.value) return;
+  
+  try {
+    // Get the best surface normal from ray hits
+    let surfaceNormal = null;
+    
+    // Priority: center hit, then average of left/right hits
+    if (centerFootHit.value && centerFootHit.value.normal) {
+      surfaceNormal = new THREE.Vector3(
+        centerFootHit.value.normal.x,
+        centerFootHit.value.normal.y,
+        centerFootHit.value.normal.z
+      );
+    } else if (leftFootHit.value?.normal || rightFootHit.value?.normal) {
+      // Average the normals if we have multiple hits
+      surfaceNormal = new THREE.Vector3(0, 0, 0);
+      let normalCount = 0;
+      
+      if (leftFootHit.value?.normal) {
+        surfaceNormal.add(new THREE.Vector3(
+          leftFootHit.value.normal.x,
+          leftFootHit.value.normal.y,
+          leftFootHit.value.normal.z
+        ));
+        normalCount++;
+      }
+      
+      if (rightFootHit.value?.normal) {
+        surfaceNormal.add(new THREE.Vector3(
+          rightFootHit.value.normal.x,
+          rightFootHit.value.normal.y,
+          rightFootHit.value.normal.z
+        ));
+        normalCount++;
+      }
+      
+      if (normalCount > 0) {
+        surfaceNormal.divideScalar(normalCount).normalize();
+      } else {
+        surfaceNormal = null;
+      }
+    }
+    
+    // If no surface normal found, use opposite of gravity direction
+    if (!surfaceNormal) {
+      surfaceNormal = gravityDirection.clone().multiplyScalar(-1);
+    }
+    
+    // Calculate target orientation: align player's "up" with surface normal
+    const currentQuat = new THREE.Quaternion(
+      playerBody.value.rotation().x,
+      playerBody.value.rotation().y,
+      playerBody.value.rotation().z,
+      playerBody.value.rotation().w
+    );
+    
+    // Get current forward direction (preserve yaw when possible)
+    const currentForward = new THREE.Vector3(0, 0, -1).applyQuaternion(currentQuat);
+    
+    // Project current forward onto the surface plane
+    const projectedForward = currentForward.clone()
+      .sub(surfaceNormal.clone().multiplyScalar(currentForward.dot(surfaceNormal)))
+      .normalize();
+    
+    // If projected forward is too small, use a default direction
+    if (projectedForward.lengthSq() < 0.1) {
+      // Find a reasonable forward direction on the surface
+      const up = new THREE.Vector3(0, 1, 0);
+      projectedForward.crossVectors(surfaceNormal, up);
+      if (projectedForward.lengthSq() < 0.1) {
+        projectedForward.set(1, 0, 0).projectOnPlane(surfaceNormal);
+      }
+      projectedForward.normalize();
+    }
+    
+    // Create target rotation matrix
+    const right = new THREE.Vector3().crossVectors(projectedForward, surfaceNormal).normalize();
+    const targetMatrix = new THREE.Matrix4().makeBasis(right, surfaceNormal, projectedForward.clone().multiplyScalar(-1));
+    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(targetMatrix);
+    
+    // Smoothly interpolate to target orientation
+    const lerpFactor = 0.1; // Adjust for smoother/faster alignment
+    currentQuat.slerp(targetQuat, lerpFactor);
+    
+    // Apply the rotation
+    playerBody.value.setRotation({
+      x: currentQuat.x,
+      y: currentQuat.y,
+      z: currentQuat.z,
+      w: currentQuat.w
+    }, true);
+    
+    // Update last ground normal for reference
+    if (lastGroundNormal && lastGroundNormal.value) {
+      lastGroundNormal.value.copy(surfaceNormal);
+    }
+    
+  } catch (e) {
+    console.error("Error aligning player to surface:", e);
   }
 };
 
