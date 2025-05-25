@@ -85,8 +85,8 @@ const lastGroundNormal = shallowRef(new THREE.Vector3(0, 1, 0));
 const playerHeight = 1.8;
 const playerRadius = 0.4;
 const cameraRotation = shallowRef(new THREE.Euler(0, 0, 0, 'YXZ'));
-const walkSpeed = 4; // Reduced from 8 to 4
-const runSpeed = 8;  // Reduced from 15 to 8
+const walkSpeed = 8; // Increased from 4 to 8
+const runSpeed = 16;  // Increased from 8 to 16
 const jumpForce = 8;
 
 // Controls
@@ -1537,7 +1537,7 @@ const handleAllMovement = (deltaTime) => {
     // Apply movement forces
     if (isGrounded.value) {
       // Ground movement
-      const groundAccel = 50.0;
+      const groundAccel = 100.0; // Increased from 50.0 to 100.0 for faster acceleration
       newVelX += moveDir.x * groundAccel * deltaTime;
       newVelY += moveDir.y * groundAccel * deltaTime; // Include Y for slopes
       newVelZ += moveDir.z * groundAccel * deltaTime;
@@ -1559,16 +1559,16 @@ const handleAllMovement = (deltaTime) => {
         newVelZ = vel.z;
       }
     } else {
-      // Air movement - reduced control but still allow movement in facing direction
-      const airControl = 10.0;
+      // Air movement - minimal control for realistic falling
+      const airControl = 1.0; // Reduced from 5.0 to 1.0 for very limited air movement
       newVelX += moveDir.x * airControl * deltaTime;
       newVelY += moveDir.y * airControl * deltaTime; // Allow Y movement when airborne
       newVelZ += moveDir.z * airControl * deltaTime;
       
-      // Apply air resistance
-      newVelX *= 0.99;
+      // Apply stronger air resistance to reduce horizontal movement while falling
+      newVelX *= 0.95; // Increased resistance from 0.99 to 0.95
       newVelY *= 0.98; // Slightly less air resistance on Y
-      newVelZ *= 0.99;
+      newVelZ *= 0.95; // Increased resistance from 0.99 to 0.95
     }
     
     // Handle jumping - jump against gravity direction
@@ -1984,10 +1984,11 @@ const createRayVisualizations = () => {
     centerRayLine.value = createRayLine();
     facingLine.value = createRayLine(facingMaterial);
     
+       
     // Add rays to player instead of scene so they move with the player
     player.value.add(leftRayLine.value);
     player.value.add(rightRayLine.value);
-    player.value.add(centerRayLine.value);
+       player.value.add(centerRayLine.value);
     player.value.add(facingLine.value);
     
     
