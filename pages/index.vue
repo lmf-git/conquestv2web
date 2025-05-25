@@ -96,8 +96,8 @@ const keys = reactive({
 
 // Physics settings
 const gravity = reactive({
-  center: new THREE.Vector3(0, -150, 0),
-  strength: 20  // Increased from 10 to 20 for more obvious effect
+  center: new THREE.Vector3(0, -230, 0), // Planet center position
+  strength: 500  // Gravity force strength
 });
 
 // Initialize debugInfo as a reactive object to store debugging information
@@ -339,7 +339,7 @@ const startGame = async () => {
       console.log("Creating physics world");
       try {
         // Create with standard gravity first
-        const gravityVec = { x: 0, y: -20, z: 0 };
+        const gravityVec = { x: 0, y: 0, z: 0 };
         physicsWorld.value = new RAPIER.World(gravityVec);
         console.log("Physics world created successfully");
         
@@ -414,9 +414,10 @@ onMounted(async () => {
       
       // Create physics world with gravity that matches our planet-centered gravity
       if (!physicsWorld.value) {
-        const gravityVec = { x: 0, y: -20, z: 0 };
+        // Disable global gravity - we'll apply our own planet-centered gravity
+        const gravityVec = { x: 0, y: 0, z: 0 };
         physicsWorld.value = new RAPIER.World(gravityVec);
-        console.log("Physics world created with gravity:", gravityVec);
+        console.log("Physics world created with disabled gravity:", gravityVec);
       }
     } catch (rapierError) {
       console.error("Error initializing Rapier:", rapierError);
@@ -1027,6 +1028,8 @@ const createPlanet = () => {
     }
     
     console.log("Planet created successfully");
+    
+    // Update gravity center to match planet position
     gravity.center.copy(planet.value.position);
     
     return planet.value;
@@ -1334,6 +1337,20 @@ const handleAllMovement = (deltaTime) => {
   
   try {
     const velocity = playerBody.value.linvel();
+    const playerTranslation = playerBody.value.translation();
+    const playerPos = new THREE.Vector3(playerTranslation.x, playerTranslation.y, playerTranslation.z);
+    
+    // Calculate planet-centered gravity
+    const gravityDir = new THREE.Vector3()
+      .subVectors(gravity.center, playerPos)
+      .normalize();
+    
+    // Calculate distance for gravity falloff (optional)
+    const distanceToPlanet = playerPos.distanceTo(gravity.center);
+    const gravityStrength = gravity.strength; // Could add distance falloff here: / (distanceToPlanet * distanceToPlanet)
+    
+    // Apply custom gravity force
+    const gravityForce = gravityDir.clone().multiplyScalar(gravityStrength * deltaTime);
     
     // Calculate movement input
     let moveX = 0;
@@ -1377,10 +1394,12 @@ const handleAllMovement = (deltaTime) => {
     moveDir.addScaledVector(forward, moveZ);
     moveDir.addScaledVector(right, moveX);
     
-    // Apply movement forces - use impulses instead of direct velocity for better physics
-    let newVelX = velocity.x;
-    let newVelZ = velocity.z;
+    // Start with current velocity and apply planet gravity
+    let newVelX = velocity.x + gravityForce.x;
+    let newVelY = velocity.y + gravityForce.y;
+    let newVelZ = velocity.z + gravityForce.z;
     
+    // Apply movement forces - use impulses instead of direct velocity for better physics
     if (isGrounded.value) {
       // Ground movement - apply impulses for more responsive control
       const groundAccel = 50.0; // Acceleration on ground
@@ -1393,12 +1412,15 @@ const handleAllMovement = (deltaTime) => {
         newVelZ *= 0.8;
       }
       
-      // Clamp to max speed
-      const currentHorizontalSpeed = Math.sqrt(newVelX * newVelX + newVelZ * newVelZ);
-      if (currentHorizontalSpeed > speed) {
-        const scale = speed / currentHorizontalSpeed;
-        newVelX *= scale;
-        newVelZ *= scale;
+      // Clamp to max speed (but don't limit gravity component)
+      const horizontalVel = new THREE.Vector3(newVelX, 0, newVelZ);
+      const gravityComponent = new THREE.Vector3(gravityForce.x, 0, gravityForce.z);
+      const movementVel = horizontalVel.clone().sub(gravityComponent);
+      
+      if (movementVel.length() > speed) {
+        movementVel.normalize().multiplyScalar(speed);
+        newVelX = movementVel.x + gravityComponent.x;
+        newVelZ = movementVel.z + gravityComponent.z;
       }
     } else {
       // Air movement - reduced control
@@ -1411,14 +1433,15 @@ const handleAllMovement = (deltaTime) => {
       newVelZ *= 0.99;
     }
     
-    // Handle jumping
-    let newVelY = velocity.y;
-    
+    // Handle jumping - jump against gravity direction
     if (keys.jump && isGrounded.value && !jumpInProgress.value) {
-      newVelY = jumpForce;
+      const jumpVector = gravityDir.clone().multiplyScalar(-jumpForce);
+      newVelX += jumpVector.x;
+      newVelY += jumpVector.y;
+      newVelZ += jumpVector.z;
       jumpInProgress.value = true;
       jumpTime.value = 0;
-      console.log("Jump initiated with force:", jumpForce);
+      console.log("Jump initiated against gravity direction with force:", jumpForce);
     }
     
     // Update jump progress
@@ -1427,11 +1450,6 @@ const handleAllMovement = (deltaTime) => {
       if (jumpTime.value >= jumpDuration || isGrounded.value) {
         jumpInProgress.value = false;
       }
-    }
-    
-    // Apply gravity when not grounded
-    if (!isGrounded.value) {
-      newVelY += -20 * deltaTime; // Standard gravity
     }
     
     // Apply the new velocity
@@ -1443,9 +1461,10 @@ const handleAllMovement = (deltaTime) => {
     
     // Debug logging for movement
     if (frameCount.value % 60 === 0 && (moveLength > 0 || !isGrounded.value)) {
-      console.log("Movement - Input:", moveLength.toFixed(2), "Dir:", moveDir.x.toFixed(2), moveDir.z.toFixed(2), 
+      console.log("Movement - Gravity dir:", gravityDir.x.toFixed(2), gravityDir.y.toFixed(2), gravityDir.z.toFixed(2),
+                  "Distance to planet:", distanceToPlanet.toFixed(1),
                   "Vel:", newVelX.toFixed(2), newVelY.toFixed(2), newVelZ.toFixed(2),
-                  "Grounded:", isGrounded.value, "Collisions:", groundCollisions.value.size);
+                  "Grounded:", isGrounded.value);
     }
   } catch (e) {
     console.error("Error in handleAllMovement:", e);
