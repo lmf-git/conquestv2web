@@ -104,6 +104,8 @@ const gravity = reactive({
 const debugInfo = reactive({
   planetHandle: null,
   platformHandle: null,
+  wallHandle: null,
+  rampHandle: null,
   playerColliderHandle: null,
   lastQueryResult: null,
   colliderCount: 0
@@ -1096,6 +1098,7 @@ const setupScene = () => {
     renderer.value.setSize(window.innerWidth, window.innerHeight);
     renderer.value.setPixelRatio(window.devicePixelRatio);
     renderer.value.shadowMap.enabled = true;
+    renderer.value.shadowMap.type = THREE.PCFSoftShadowMap; // Better shadow quality
     
     // Add to DOM
     if (gameCanvas.value) {
@@ -1106,20 +1109,26 @@ const setupScene = () => {
     }
     
     // Add lights
-    const ambientLight = new THREE.AmbientLight(0x444444);
+    const ambientLight = new THREE.AmbientLight(0x444444, 0.4);
     scene.value.add(ambientLight);
     
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(50, 200, 100);
     directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 1024;
-    directionalLight.shadow.mapSize.height = 1024;
+    directionalLight.shadow.mapSize.width = 2048;
+    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 500;
+    directionalLight.shadow.camera.left = -100;
+    directionalLight.shadow.camera.right = 100;
+    directionalLight.shadow.camera.top = 100;
+    directionalLight.shadow.camera.bottom = -100;
     scene.value.add(directionalLight);
     
     // Create game objects if physics is ready
     if (physicsWorld.value) {
       createPlanet();
-      createPlatform();
+      createPlatform(); // This will now also create wall and ramp
       createPlayer();
       createRayVisualizations();
     } else {
@@ -1237,9 +1246,131 @@ const createPlatform = () => {
     }
     
     console.log("Platform created successfully at position:", platform.value.position, "with collider handle:", platformCollider.handle);
+    
+    // Create wall on one side of the platform
+    createWall();
+    
+    // Create ramp on another side of the platform
+    createRamp();
+    
     return platform.value;
   } catch (e) {
     console.error("Error creating platform:", e);
+    return null;
+  }
+};
+
+// Add createWall function
+const createWall = () => {
+  if (!scene.value || !physicsWorld.value) {
+    console.error("Scene or physics world not initialized for wall");
+    return;
+  }
+  
+  try {
+    console.log("Creating wall...");
+    
+    const wallWidth = 20;
+    const wallHeight = 8;
+    const wallDepth = 2;
+    
+    const wallGeometry = new THREE.BoxGeometry(wallWidth, wallHeight, wallDepth);
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: 0x666666,
+      roughness: 0.8,
+      metalness: 0.1
+    });
+    
+    const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+    // Position wall at the edge of the platform (north side)
+    wall.position.set(0, 30 + (wallHeight / 2) + 1.5, 20); // 20 units north of platform center
+    wall.receiveShadow = true;
+    wall.castShadow = true;
+    scene.value.add(wall);
+    
+    // Create physics body for wall
+    const wallBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(wall.position.x, wall.position.y, wall.position.z);
+    
+    const wallBody = physicsWorld.value.createRigidBody(wallBodyDesc);
+    const wallColliderDesc = RAPIER.ColliderDesc.cuboid(
+      wallWidth / 2,
+      wallHeight / 2,
+      wallDepth / 2
+    )
+    .setFriction(0.8)
+    .setRestitution(0.1);
+    
+    const wallCollider = physicsWorld.value.createCollider(wallColliderDesc, wallBody);
+    
+    if (debugInfo) {
+      debugInfo.wallHandle = wallCollider.handle;
+    }
+    
+    console.log("Wall created successfully at position:", wall.position);
+    return wall;
+  } catch (e) {
+    console.error("Error creating wall:", e);
+    return null;
+  }
+};
+
+// Add createRamp function
+const createRamp = () => {
+  if (!scene.value || !physicsWorld.value) {
+    console.error("Scene or physics world not initialized for ramp");
+    return;
+  }
+  
+  try {
+    console.log("Creating ramp...");
+    
+    const rampWidth = 12;
+    const rampHeight = 6;
+    const rampDepth = 15;
+    
+    const rampGeometry = new THREE.BoxGeometry(rampWidth, rampHeight, rampDepth);
+    const rampMaterial = new THREE.MeshStandardMaterial({
+      color: 0x999944,
+      roughness: 0.9,
+      metalness: 0.0
+    });
+    
+    const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
+    // Position ramp lower and closer to platform edge for easier access
+    ramp.position.set(15, 30 - 1, 0); // Moved closer (15 instead of 18) and lowered by 1 unit
+    
+    // Rotate the ramp to create a gentler incline (15 degrees instead of 25)
+    ramp.rotation.z = -Math.PI / 12; // About 15 degrees (gentler slope)
+    
+    ramp.receiveShadow = true;
+    ramp.castShadow = true;
+    scene.value.add(ramp);
+    
+    // Create physics body for ramp
+    const rampBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(ramp.position.x, ramp.position.y, ramp.position.z)
+      .setRotation({ x: 0, y: 0, z: -Math.PI / 12, w: Math.cos(Math.PI / 24) }); // Convert rotation to quaternion
+    
+    const rampBody = physicsWorld.value.createRigidBody(rampBodyDesc);
+    const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
+      rampWidth / 2,
+      rampHeight / 2,
+      rampDepth / 2
+    )
+    .setFriction(0.7) // Slightly less friction for sliding
+    .setRestitution(0.1);
+    
+    const rampCollider = physicsWorld.value.createCollider(rampColliderDesc, rampBody);
+    
+    if (debugInfo) {
+      debugInfo.rampHandle = rampCollider.handle;
+    }
+    
+    console.log("Ramp created successfully at position:", ramp.position);
+    return ramp;
+  } catch (e) {
+    console.error("Error creating ramp:", e);
     return null;
   }
 };
