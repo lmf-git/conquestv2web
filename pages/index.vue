@@ -1786,7 +1786,7 @@ const createPlatform = () => {
       movingPlatformHeight / 2,
       movingPlatformDepth / 2
     )
-    .setFriction(16.0)  // Increased from 2.5 to 4.0 for better grip while still allowing walking
+    .setFriction(12.0)  // Increased from 2.5 to 4.0 for better grip while still allowing walking
     .setRestitution(0.01);  // Keep minimal bounce
     
     physicsWorld.value.createCollider(movingPlatformColliderDesc, movingPlatformBody.value);
@@ -1795,7 +1795,7 @@ const createPlatform = () => {
     movingPlatform.value.userData = {
       initialX: movingPlatform.value.position.x,
       moveRange: 20, // Move 20 units side to side
-      moveSpeed: 0.5 // Complete cycle every 2π/0.5 ≈ 12.5 seconds
+      moveSpeed: 0.2 // Reduced from 0.5 to 0.2 for slower movement (complete cycle every 2π/0.2 ≈ 31 seconds)
     };
     
     console.log("Moving platform created at ramp top:", 
@@ -1982,7 +1982,7 @@ const createRayVisualizations = () => {
     leftRayLine.value = createRayLine();
     rightRayLine.value = createRayLine();
     centerRayLine.value = createRayLine();
-    facingLine.value = createRayLine(facingMaterial);
+       facingLine.value = createRayLine(facingMaterial);
     
        
     // Add rays to player instead of scene so they move with the player
