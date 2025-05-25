@@ -1786,7 +1786,7 @@ const createPlatform = () => {
       movingPlatformHeight / 2,
       movingPlatformDepth / 2
     )
-    .setFriction(26.0)  // Increased from 2.5 to 4.0 for better grip while still allowing walking
+    .setFriction(16.0)  // Increased from 2.5 to 4.0 for better grip while still allowing walking
     .setRestitution(0.01);  // Keep minimal bounce
     
     physicsWorld.value.createCollider(movingPlatformColliderDesc, movingPlatformBody.value);
