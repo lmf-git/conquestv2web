@@ -935,7 +935,7 @@ const createPushableRock = (position, scale = 1.0) => {
     
     // Create collider - using sphere for better rolling
     const rockColliderDesc = RAPIER.ColliderDesc.ball(2 * scale)
-      .setDensity(1.2) // Reduced from 2.0 to 1.2 for lighter rocks
+      .setDensity(0.3) // Reduced from 1.2 to 0.3 for much lighter rocks
       .setFriction(0.8)
       .setRestitution(0.4); // Increased from 0.2 to 0.4 for more bounce
     
@@ -1982,13 +1982,13 @@ const createRayVisualizations = () => {
     leftRayLine.value = createRayLine();
     rightRayLine.value = createRayLine();
     centerRayLine.value = createRayLine();
-       facingLine.value = createRayLine(facingMaterial);
+    facingLine.value = createRayLine(facingMaterial);
     
        
     // Add rays to player instead of scene so they move with the player
     player.value.add(leftRayLine.value);
     player.value.add(rightRayLine.value);
-       player.value.add(centerRayLine.value);
+    player.value.add(centerRayLine.value);
     player.value.add(facingLine.value);
     
     
