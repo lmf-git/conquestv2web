@@ -47,6 +47,7 @@ const lastPlayerPosition = shallowRef(null); // Add this declaration
 const positionStuckFrames = ref(0); // Add this declaration
 const lastDebugTime = ref(0); // Add this declaration
 const frameCount = ref(0); // Add frameCount as a reactive variable
+const initTimeout = ref(null); // For physics initialization timeout
 
 // THREE.js objects - use shallowRef to prevent reactivity issues
 const scene = shallowRef(null);
@@ -345,19 +346,44 @@ const onKeyUp = (event) => {
   }
 };
 
-// Add missing startGame function
-const startGame = () => {
+// Modify the startGame function to handle physics initialization more carefully
+const startGame = async () => {
   try {
     console.log("Starting game...");
     
-    // Check if physics world exists, if not create a fallback
+    // Make sure RAPIER is properly initialized before proceeding
+    if (!RAPIER.World) {
+      console.log("Rapier not fully initialized, initializing now...");
+      try {
+        await RAPIER.init({
+          locateFile: (path) => {
+            return `https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.11.2/${path}`;
+          }
+        });
+        console.log("Rapier initialized successfully");
+      } catch (rapierError) {
+        console.error("Failed to initialize Rapier:", rapierError);
+        errorMessage.value = "Failed to initialize physics engine. Please refresh.";
+      }
+    }
+    
+    // Check if physics world exists, if not create it properly
     if (!physicsWorld.value && RAPIER.World) {
-      console.warn("Physics world not initialized, creating a fallback");
-      physicsWorld.value = new RAPIER.World({ x: 0, y: -20, z: 0 });
-      
-      // Create necessary game objects if they don't exist
-      if (!platform.value) createPlatform();
-      if (!player.value) createPlayer();
+      console.log("Creating physics world");
+      try {
+        // Create with standard gravity first
+        const gravityVec = { x: 0, y: -20, z: 0 };
+        physicsWorld.value = new RAPIER.World(gravityVec);
+        console.log("Physics world created successfully");
+        
+        // Create necessary game objects if they don't exist
+        if (!platform.value) createPlatform();
+        if (!player.value) createPlayer();
+      } catch (worldError) {
+        console.error("Error creating physics world:", worldError);
+        errorMessage.value = "Error creating physics world: " + worldError.message;
+        return; // Don't proceed if we can't create the physics world
+      }
     }
     
     // Check if game canvas is available
@@ -392,17 +418,142 @@ const startGame = () => {
   } catch (e) {
     errorMessage.value = "Error starting game: " + e.message;
     console.error("Error starting game:", e);
-    
-    // Try to start the game anyway
-    started.value = true;
-    if (!clock.running) {
-      clock.start();
-      animate();
-    }
   }
 };
 
-// Fix by adding the missing animate function
+// Modify the onMounted function to ensure proper initialization sequence
+onMounted(async () => {
+  try {
+    console.log("Starting to initialize Rapier physics engine...");
+    
+    // Set a timeout to prevent hanging on loading screen
+    initTimeout.value = setTimeout(() => {
+      if (loading.value) {
+        console.warn("Physics initialization timed out - forcing start anyway");
+        loading.value = false;
+        errorMessage.value = "Physics engine may not be working correctly, but you can try to play anyway.";
+      }
+    }, 8000); // 8 second timeout (increased from 5)
+    
+    // Initialize Rapier physics engine with explicit version and better error handling
+    try {
+      await RAPIER.init({
+        locateFile: (path) => {
+          console.log("Locating Rapier file:", path);
+          return `https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.11.2/${path}`;
+        }
+      });
+      console.log("Rapier physics engine initialized successfully");
+      
+      // Create physics world with gravity that matches our planet-centered gravity
+      if (!physicsWorld.value) {
+        const gravityVec = { x: 0, y: -20, z: 0 };
+        physicsWorld.value = new RAPIER.World(gravityVec);
+        console.log("Physics world created with gravity:", gravityVec);
+      }
+    } catch (rapierError) {
+      console.error("Error initializing Rapier:", rapierError);
+      errorMessage.value = "Failed to initialize physics engine: " + rapierError.message;
+      // Continue to allow user to try starting the game anyway
+    }
+    
+    // Clear timeout since initialization completed (successfully or not)
+    if (initTimeout.value) {
+      clearTimeout(initTimeout.value);
+      initTimeout.value = null;
+    }
+    
+    // Set loading to false
+    loading.value = false;
+    
+    // Set up scene
+    setupScene();
+    
+    // Handle browser events
+    window.addEventListener('resize', onResize);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('pointerlockchange', onPointerLockChange);
+    
+    console.log("Game initialization complete, ready to start");
+  } catch (e) {
+    console.error("Error during game initialization:", e);
+    
+    // Clear timeout since we hit the catch block
+    if (initTimeout.value) {
+      clearTimeout(initTimeout.value);
+      initTimeout.value = null;
+    }
+    
+    // Set error message and hide loading screen
+    errorMessage.value = "Failed to initialize game: " + e.message;
+    loading.value = false;
+  }
+});
+
+// Modify the setupScene function to work without requiring physics immediately
+const setupScene = () => {
+  try {
+    console.log("Setting up scene...");
+    
+    // Create Three.js scene
+    scene.value = new THREE.Scene();
+    scene.value.background = new THREE.Color(0x111122);
+    scene.value.fog = new THREE.Fog(0x111122, 100, 300);
+    
+    // Create camera
+    camera.value = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.value.position.set(0, playerHeight, 0);
+    
+    // Create renderer with proper DOM element checks
+    renderer.value = new THREE.WebGLRenderer({ antialias: true });
+    renderer.value.setSize(window.innerWidth, window.innerHeight);
+    renderer.value.setPixelRatio(window.devicePixelRatio);
+    renderer.value.shadowMap.enabled = true;
+    
+    // Add null check before appending to DOM
+    if (gameCanvas.value) {
+      gameCanvas.value.appendChild(renderer.value.domElement);
+    } else {
+      console.error("Game canvas element not found");
+      throw new Error("Game canvas element not found");
+    }
+    
+    // Add lights
+    const ambientLight = new THREE.AmbientLight(0x444444);
+    scene.value.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(50, 200, 100);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
+    scene.value.add(directionalLight);
+    
+    // Only create physics objects if RAPIER is properly initialized
+    if (physicsWorld.value) {
+      // Create game objects
+      createPlanet();
+      createPlatform();
+      createPlayer();
+    } else {
+      console.warn("Physics not initialized, skipping physics object creation");
+    }
+    
+    // Add stars for background (this doesn't require physics)
+    createStars();
+    
+    console.log("Scene setup complete!");
+    return true;
+  } catch (e) {
+    console.error("Error in setupScene:", e);
+    errorMessage.value = "Failed to set up scene: " + e.message;
+    return false;
+  }
+};
+
+// Modify the animate function to be more resilient to missing physics components
 const animate = () => {
   if (!started.value) return;
   
@@ -426,47 +577,21 @@ const animate = () => {
     
     const deltaTime = Math.min(clock.getDelta(), 0.1);
     
-    // Handle jump state progression
-    if (jumpInProgress.value) {
-      jumpTime.value += deltaTime;
-      
-      if (jumpTime.value >= jumpDuration) {
-        jumpInProgress.value = false;
-        jumpTime.value = 0;
-        console.log("Jump completed");
-      } else {
-        // Calculate jump height using sine wave (smooth up and down)
-        const jumpProgress = jumpTime.value / jumpDuration;
-        const jumpOffset = Math.sin(jumpProgress * Math.PI) * jumpHeight;
-        
-        // Get current position
-        const playerTranslation = playerBody.value.translation();
-        const playerPos = new THREE.Vector3(
-          playerTranslation.x,
-          playerTranslation.y,
-          playerTranslation.z
-        );
-        
-        // Get jump direction (opposite to gravity)
-        const gravityDir = new THREE.Vector3()
-          .subVectors(gravity.center, playerPos)
-          .normalize();
-        const jumpDir = gravityDir.clone().negate();
-        
-        // Apply jump offset
-        const newPos = {
-          x: playerPos.x + jumpDir.x * jumpOffset * deltaTime * 10,
-          y: playerPos.y + jumpDir.y * jumpOffset * deltaTime * 10,
-          z: playerPos.z + jumpDir.z * jumpOffset * deltaTime * 10
-        };
-        
-        // Set next position directly
-        playerBody.value.setNextKinematicTranslation(newPos);
+    // Step the physics world if it exists
+    if (physicsWorld.value) {
+      try {
+        physicsWorld.value.step();
+      } catch (e) {
+        console.error("Error stepping physics world:", e);
       }
     }
     
-    // Ensure all necessary components are initialized before proceeding
+    // Skip physics-dependent code if required components aren't available
     if (!physicsWorld.value || !playerBody.value || !player.value) {
+      // Just render the scene if available
+      if (renderer.value && scene.value && camera.value) {
+        renderer.value.render(scene.value, camera.value);
+      }
       console.warn("Waiting for game components to initialize...");
       return;
     }
@@ -600,16 +725,16 @@ const applyGroundFollowing = () => {
     
     if (closestHit) {
       // Calculate desired hover height - increased for more clearance
-      const targetHoverHeight = 0.5; // Increased from 0.3
+      const targetHoverHeight = 0.5;
       const currentHeight = closestToi;
       
-      // Calculate adjustment needed
+      // Calculate adjustment needed - use spring physics approach
       const heightAdjustment = targetHoverHeight - currentHeight;
       
-      // Apply stronger hover force with logging for early frames
+      // Apply stronger hover force with spring-like behavior
       if (Math.abs(heightAdjustment) > 0.001) {
-        // Apply 5x stronger correction to ensure player stays above ground
-        const hoverMultiplier = 5.0; // Increased from 3.0
+        // Stronger correction factor with dampening
+        const hoverMultiplier = 10.0; // Increased from 5.0
         const adjustmentVector = gravityDir.clone().multiplyScalar(heightAdjustment * hoverMultiplier);
         
         // Get new position
@@ -619,18 +744,28 @@ const applyGroundFollowing = () => {
           z: playerPos.z + adjustmentVector.z
         };
         
+        // For very small adjustments, snap directly to prevent jitter
+        if (Math.abs(heightAdjustment) < 0.05) {
+          const exactPos = {
+            x: playerPos.x,
+            y: playerPos.y + (targetHoverHeight - currentHeight) * gravityDir.y,
+            z: playerPos.z
+          };
+          playerBody.value.setNextKinematicTranslation(exactPos);
+        } else {
+          // Otherwise use the calculated position
+          playerBody.value.setNextKinematicTranslation(newPos);
+        }
+        
         // Log hover force during early frames
         if (frameCount.value < 20) {
           console.log(`Applying hover force: toi=${closestToi.toFixed(2)}, adj=${heightAdjustment.toFixed(2)}`);
         }
-        
-        // Set position directly
-        playerBody.value.setNextKinematicTranslation(newPos);
       }
     }
   } else {
     // Apply falling - use slower fall speed
-    const fallSpeed = 0.05; // Keep consistently slow to give rays time to detect
+    const fallSpeed = 0.05;
     
     const newPos = {
       x: playerPos.x + gravityDir.x * fallSpeed,
@@ -638,7 +773,12 @@ const applyGroundFollowing = () => {
       z: playerPos.z + gravityDir.z * fallSpeed
     };
     
-    playerBody.value.setNextKinematicTranslation(newPos);
+    // Try to enable CCD for better collision detection
+    try {
+      playerBody.value.setNextKinematicTranslation(newPos, true); // With CCD
+    } catch (e) {
+      playerBody.value.setNextKinematicTranslation(newPos); // Fallback without CCD
+    }
     
     // Log that we're falling during early frames
     if (frameCount.value < 20) {
@@ -669,15 +809,6 @@ const applyGroundFollowing = () => {
     positionStuckFrames.value = 0;
   }
 };
-
-// Add missing function for applyGroundFollowing
-// const applyGroundFollowing = () => {
-//   if (!playerBody.value) return;
-//   ...
-// };
-
-// The code should transition directly from the end of the first applyGroundFollowing
-// function (around line 647) to the handlePlayerMovement function (around line 760)
 
 // Add missing handlePlayerMovement function
 const handlePlayerMovement = (deltaTime) => {
@@ -797,7 +928,7 @@ const handlePlayerMovement = (deltaTime) => {
   }
 };
 
-// Update the checkGrounded function to improve ray detection
+// Update the checkGrounded function to properly validate ray hits
 const checkGrounded = () => {
   if (!playerBody.value || !physicsWorld.value || !player.value) return;
   
@@ -822,65 +953,62 @@ const checkGrounded = () => {
   // Get up vector (opposite to gravity)
   const upVector = gravityDir.clone().negate();
   
-  // Calculate foot positions - INCREASED foot height and spread for better detection
-  const footHeight = playerHeight * 0.5;
-  const footSpread = playerRadius * 1.5; // Increased from 1.2
-  
-  // Get right vector based on player orientation
+  // Get right and forward vectors based on player orientation
   const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(player.value.quaternion);
   const rightVector = new THREE.Vector3().crossVectors(upVector, forwardVector).normalize();
   
-  // Calculate foot positions - use higher offsets to start rays from player's capsule edge
-  leftFootPos.value.copy(playerPos).add(
-    rightVector.clone().multiplyScalar(-footSpread)
-      .add(upVector.clone().multiplyScalar(-footHeight))
-  );
+  // Calculate foot positions with better distribution - use 5 rays instead of 3
+  const footHeight = playerHeight * 0.5;
+  const footSpread = playerRadius * 1.5;
   
-  rightFootPos.value.copy(playerPos).add(
-    rightVector.clone().multiplyScalar(footSpread)
-      .add(upVector.clone().multiplyScalar(-footHeight))
-  );
+  // Create an array of ray origins around the player for better detection
+  const rayOrigins = [
+    playerPos.clone().add(upVector.clone().multiplyScalar(-footHeight)), // Center
+    playerPos.clone().add(rightVector.clone().multiplyScalar(-footSpread).add(upVector.clone().multiplyScalar(-footHeight))), // Left foot
+    playerPos.clone().add(rightVector.clone().multiplyScalar(footSpread).add(upVector.clone().multiplyScalar(-footHeight))), // Right foot
+    playerPos.clone().add(forwardVector.clone().multiplyScalar(footSpread).add(upVector.clone().multiplyScalar(-footHeight))), // Front foot
+    playerPos.clone().add(forwardVector.clone().multiplyScalar(-footSpread).add(upVector.clone().multiplyScalar(-footHeight))) // Back foot
+  ];
   
-  centerFootPos.value.copy(playerPos).add(
-    upVector.clone().multiplyScalar(-footHeight - 0.1)
-  );
+  // Store the original 3 positions for backward compatibility
+  leftFootPos.value.copy(rayOrigins[1]);
+  rightFootPos.value.copy(rayOrigins[2]);
+  centerFootPos.value.copy(rayOrigins[0]);
   
-  // Use a MUCH longer ray length to ensure we reach the platform and planet
-  const rayLength = 100.0; // Increased from 20.0 to 100.0
+  // Use a MUCH longer ray length
+  const rayLength = 100.0;
   
   try {
-    // Create rays from foot positions - IMPORTANT: ensure ray direction is exactly toward gravity center
-    const leftRayDir = new THREE.Vector3().subVectors(gravity.center, leftFootPos.value).normalize();
-    const rightRayDir = new THREE.Vector3().subVectors(gravity.center, rightFootPos.value).normalize();
-    const centerRayDir = new THREE.Vector3().subVectors(gravity.center, centerFootPos.value).normalize();
+    // Cast rays for all 5 points - create an array to store hit results
+    const rayResults = [];
+    let closestToi = Infinity;
+    let closestHit = null;
     
-    const leftRay = new RAPIER.Ray(
-      { x: leftFootPos.value.x, y: leftFootPos.value.y, z: leftFootPos.value.z },
-      { x: leftRayDir.x, y: leftRayDir.y, z: leftRayDir.z }
-    );
+    // Cast rays from all points
+    for (let i = 0; i < rayOrigins.length; i++) {
+      const origin = rayOrigins[i];
+      const rayDir = new THREE.Vector3().subVectors(gravity.center, origin).normalize();
+      
+      const ray = new RAPIER.Ray(
+        { x: origin.x, y: origin.y, z: origin.z },
+        { x: rayDir.x, y: rayDir.y, z: rayDir.z }
+      );
+      
+      // Use solid=false for first hit
+      const result = physicsWorld.value.castRay(ray, rayLength, false);
+      rayResults.push(result);
+      
+      // Track closest hit
+      if (result && result.toi < closestToi) {
+        closestToi = result.toi;
+        closestHit = result;
+      }
+    }
     
-    const rightRay = new RAPIER.Ray(
-      { x: rightFootPos.value.x, y: rightFootPos.value.y, z: rightFootPos.value.z },
-      { x: rightRayDir.x, y: rightRayDir.y, z: rightRayDir.z }
-    );
-    
-    const centerRay = new RAPIER.Ray(
-      { x: centerFootPos.value.x, y: centerFootPos.value.y, z: centerFootPos.value.z },
-      { x: centerRayDir.x, y: centerRayDir.y, z: centerRayDir.z }
-    );
-    
-    // Cast rays with a very generous maxToi
-    const maxToi = 100.0; // Increased from 10.0
-    
-    // Cast rays - use solid=false for first hit
-    const leftResult = physicsWorld.value.castRay(leftRay, rayLength, false);
-    leftFootHit.value = leftResult && leftResult.toi < maxToi ? leftResult : null;
-    
-    const rightResult = physicsWorld.value.castRay(rightRay, rayLength, false);
-    rightFootHit.value = rightResult && rightResult.toi < maxToi ? rightResult : null;
-    
-    const centerResult = physicsWorld.value.castRay(centerRay, rayLength, false);
-    centerFootHit.value = centerResult && centerResult.toi < maxToi ? centerResult : null;
+    // Store specific hits for the original 3 positions
+    leftFootHit.value = rayResults[1];
+    rightFootHit.value = rayResults[2]; 
+    centerFootHit.value = rayResults[0];
     
     // Add debug logs to see what's being hit
     if (frameCount.value < 20) {
@@ -889,7 +1017,7 @@ const checkGrounded = () => {
                  `center=${centerFootHit.value ? centerFootHit.value.toi.toFixed(2) : 'none'}`);
     }
     
-    // Also try direct shape intersection test
+    // Use shape intersection as a fallback (keeping your original code)
     const sphereRadius = 0.2;
     const spherePos = { 
       x: centerFootPos.value.x, 
@@ -929,326 +1057,68 @@ const checkGrounded = () => {
       centerFootHit.value = { toi: 0.1, normal: { x: 0, y: 1, z: 0 } };
     }
     
-    // Update visualizations
-    updateRayVisualizations(leftFootPos.value, rightFootPos.value, centerFootPos.value, 
-                          {x: gravityDir.x, y: gravityDir.y, z: gravityDir.z}, rayLength);
+    // Update visualizations for the original 3 rays
+    updateRayVisualizations(leftFootPos.value, rightFootPos.value, centerFootPos.value,
+                         {x: gravityDir.x, y: gravityDir.y, z: gravityDir.z}, rayLength);
     updateCollisionVisualization();
     
-    // Determine grounded state
+    // Determine grounded state - consider player grounded if ANY ray hit something
     wasGrounded.value = isGrounded.value;
-    const nowGrounded = !jumpInProgress.value && 
-                      (leftFootHit.value !== null || 
-                       rightFootHit.value !== null || 
-                       centerFootHit.value !== null);
+    const anyHit = rayResults.some(hit => hit !== null);
+    const nowGrounded = !jumpInProgress.value && anyHit;
     
     // Update state
     isGrounded.value = nowGrounded;
+    
+    // If we have a hit, align player to the surface
+    if (nowGrounded && closestHit && closestHit.normal) {
+      alignPlayerToSurface(closestHit.normal);
+    }
     
   } catch (e) {
     console.error("Error in checkGrounded:", e);
   }
 };
 
-// Add a timeout to prevent hanging on loading screen
-const initTimeout = ref(null);
-
-// Modify the onMounted function to include better error handling and a timeout
-onMounted(async () => {
+// Add function to align player to the surface normal
+const alignPlayerToSurface = (normal) => {
+  if (!playerBody.value) return;
+  
   try {
-    console.log("Starting to initialize Rapier physics engine...");
+    // Create a THREE.js vector from the Rapier normal
+    const normalVec = new THREE.Vector3(normal.x, normal.y, normal.z);
+    const up = new THREE.Vector3(0, 1, 0);
+    const angle = normalVec.angleTo(up);
     
-    // Set a timeout to prevent hanging on loading screen
-    initTimeout.value = setTimeout(() => {
-      if (loading.value) {
-        console.warn("Physics initialization timed out - forcing start anyway");
-        loading.value = false;
-        errorMessage.value = "Physics engine may not be working correctly, but you can try to play anyway.";
-      }
-    }, 5000); // 5 second timeout
-    
-    // Initialize Rapier physics engine with explicit version
-    await RAPIER.init({
-      locateFile: (path) => {
-        console.log("Locating Rapier file:", path);
-        return `https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.11.2/${path}`;
-      }
-    });
-    
-    console.log("Rapier physics engine initialized successfully");
-    
-    // Clear timeout since initialization succeeded
-    if (initTimeout.value) {
-      clearTimeout(initTimeout.value);
-      initTimeout.value = null;
+    // Only align if the angle is significant
+    if (angle > 0.01) {
+      const axis = new THREE.Vector3().crossVectors(up, normalVec).normalize();
+      const newRotation = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+      
+      // Get current rotation
+      const currentRotation = playerBody.value.rotation();
+      const currentQuat = new THREE.Quaternion(
+        currentRotation.x, currentRotation.y, currentRotation.z, currentRotation.w
+      );
+      
+      // Blend rotations for smooth transitions (slerp)
+      currentQuat.slerp(newRotation, 0.1);
+      
+      // Apply the new rotation
+      playerBody.value.setRotation(
+        { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
+        true
+      );
     }
-    
-    // Set loading to false
-    loading.value = false;
-    
-    // Set up scene
-    setupScene();
-    
-    // Handle browser events
-    window.addEventListener('resize', onResize);
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('pointerlockchange', onPointerLockChange);
-    
-    console.log("Game initialization complete, ready to start");
   } catch (e) {
-    console.error("Error during game initialization:", e);
-    
-    // Clear timeout since we hit the catch block
-    if (initTimeout.value) {
-      clearTimeout(initTimeout.value);
-      initTimeout.value = null;
-    }
-    
-    // Set error message and hide loading screen
-    errorMessage.value = "Failed to initialize physics engine: " + e.message;
-    loading.value = false;
-    
-    // Try a fallback initialization
-    tryFallbackInitialization();
-  }
-});
-
-// Add a fallback initialization function for when the main one fails
-const tryFallbackInitialization = async () => {
-  try {
-    console.log("Trying fallback initialization...");
-    
-    // Try an alternative CDN or method
-    await RAPIER.init();
-    
-    console.log("Fallback initialization succeeded");
-    errorMessage.value = "Using fallback physics engine - some features may not work correctly";
-    
-    // Set up scene if fallback worked
-    setupScene();
-    
-    // Set up event listeners
-    window.addEventListener('resize', onResize);
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('pointerlockchange', onPointerLockChange);
-  } catch (e) {
-    console.error("Fallback initialization also failed:", e);
-    errorMessage.value = "Could not initialize physics engine. Please try refreshing the page.";
+    console.error("Error aligning player to surface:", e);
   }
 };
 
-// Add the missing setupScene function
-const setupScene = () => {
-  try {
-    console.log("Setting up scene...");
-    
-    // Create Three.js scene
-    scene.value = new THREE.Scene();
-    scene.value.background = new THREE.Color(0x111122);
-    scene.value.fog = new THREE.Fog(0x111122, 100, 300);
-    
-    // Create camera
-    camera.value = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.value.position.set(0, playerHeight, 0);
-    
-    // Create renderer with proper DOM element checks
-    renderer.value = new THREE.WebGLRenderer({ antialias: true });
-    renderer.value.setSize(window.innerWidth, window.innerHeight);
-    renderer.value.setPixelRatio(window.devicePixelRatio);
-    renderer.value.shadowMap.enabled = true;
-    
-    // Add null check before appending to DOM
-    if (gameCanvas.value) {
-      gameCanvas.value.appendChild(renderer.value.domElement);
-    } else {
-      console.error("Game canvas element not found");
-      throw new Error("Game canvas element not found");
-    }
-    
-    // Add lights
-    const ambientLight = new THREE.AmbientLight(0x444444);
-    scene.value.add(ambientLight);
-    
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(50, 200, 100);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 1024;
-    directionalLight.shadow.mapSize.height = 1024;
-    scene.value.add(directionalLight);
-    
-    // Create physics world with gravity that matches our planet-centered gravity
-    const gravityVec = { x: 0, y: -20, z: 0 };
-    physicsWorld.value = new RAPIER.World(gravityVec);
-    console.log("Physics world created with gravity:", gravityVec);
-    
-    // Create game objects - make sure these functions exist and are defined before setupScene
-    createPlanet();
-    createPlatform();
-    createPlayer();
-    
-    // Add stars for background
-    createStars();
-    
-    console.log("Scene setup complete!");
-    return true;
-  } catch (e) {
-    console.error("Error in setupScene:", e);
-    errorMessage.value = "Failed to set up scene: " + e.message;
-    return false;
-  }
-};
+// Modify applyGroundFollowing to use spring-like physics
 
-// Add missing createStars function if it doesn't exist
-const createStars = () => {
-  if (!scene.value) return;
-  
-  const starGeometry = new THREE.BufferGeometry();
-  const starMaterial = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.5,
-    sizeAttenuation: false
-  });
-  
-  const starVertices = [];
-  for (let i = 0; i < 5000; i++) {
-    const x = THREE.MathUtils.randFloatSpread(2000);
-    const y = THREE.MathUtils.randFloatSpread(2000);
-    const z = THREE.MathUtils.randFloatSpread(2000);
-    starVertices.push(x, y, z);
-  }
-  
-  starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
-  const stars = new THREE.Points(starGeometry, starMaterial);
-  scene.value.add(stars);
-  
-  console.log("Stars created");
-};
 
-// Add the missing createPlanet function
-const createPlanet = () => {
-  if (!scene.value || !physicsWorld.value) return;
-  
-  try {
-    // Create planet visuals
-    const planetRadius = 100;
-    const planetGeometry = new THREE.SphereGeometry(planetRadius, 32, 32);
-    const planetMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x33aa44,
-      roughness: 0.8, 
-      metalness: 0.2
-    });
-    
-    planet.value = new THREE.Mesh(planetGeometry, planetMaterial);
-    planet.value.position.copy(gravity.center);
-    planet.value.receiveShadow = true;
-    scene.value.add(planet.value);
-    
-    // Create planet physics body
-    const planetBodyDesc = RAPIER.RigidBodyDesc.fixed();
-    planetBodyDesc.setTranslation(
-      gravity.center.x, 
-      gravity.center.y, 
-      gravity.center.z
-    );
-    const planetBody = physicsWorld.value.createRigidBody(planetBodyDesc);
-    
-    // Create planet collider
-    const planetColliderDesc = RAPIER.ColliderDesc.ball(planetRadius);
-    planetColliderDesc.setFriction(2.0);
-    const planetCollider = physicsWorld.value.createCollider(planetColliderDesc, planetBody);
-    
-    console.log("Planet created with collider:", planetCollider.handle);
-  } catch (e) {
-    console.error("Error creating planet:", e);
-  }
-};
-
-// Improve the createPlatform function to ensure proper collision detection
-const createPlatform = () => {
-  if (!scene.value || !physicsWorld.value) {
-    console.error("Scene or physics world not initialized");
-    return;
-  }
-  
-  try {
-    console.log("Creating platform...");
-    
-    // Create platform visuals
-    const platformWidth = 50;
-    const platformHeight = 4;
-    const platformDepth = 50;
-    const platformGeometry = new THREE.BoxGeometry(platformWidth, platformHeight, platformDepth);
-    const platformMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x3388ee,
-      roughness: 0.5, 
-      metalness: 0.5,
-      emissive: 0x112244
-    });
-    
-    platform.value = new THREE.Mesh(platformGeometry, platformMaterial);
-    const platformPosition = { x: 0, y: 30, z: 10 };
-    platform.value.position.set(platformPosition.x, platformPosition.y, platformPosition.z);
-    platform.value.castShadow = true;
-    platform.value.receiveShadow = true;
-    scene.value.add(platform.value);
-    
-    // Create platform physics body - ensure it's properly fixed
-    const platformBodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(platformPosition.x, platformPosition.y, platformPosition.z);
-    const platformBody = physicsWorld.value.createRigidBody(platformBodyDesc);
-    
-    // Create collider - use exact platform dimensions (no extra padding which can cause issues)
-    const platformColliderDesc = RAPIER.ColliderDesc.cuboid(
-      platformWidth / 2,  // Use exact half-width
-      platformHeight / 2, // Use exact half-height
-      platformDepth / 2   // Use exact half-depth
-    );
-    
-    // Set collision properties - increase friction
-    platformColliderDesc.setFriction(10.0);
-    platformColliderDesc.setRestitution(0.0);
-    platformColliderDesc.setDensity(1.0);
-    platformColliderDesc.setSensor(false);
-    
-    // IMPORTANT: Make sure active events are properly set
-    platformColliderDesc.setActiveEvents(
-      RAPIER.ActiveEvents.COLLISION_EVENTS | 
-      RAPIER.ActiveEvents.CONTACT_EVENTS
-    );
-    
-    const platformCollider = physicsWorld.value.createCollider(platformColliderDesc, platformBody);
-    console.log("Platform created with collider:", platformCollider.handle);
-    
-    // Store platform collider handle in debugInfo for reference
-    if (debugInfo) {
-      debugInfo.platformHandle = platformCollider.handle;
-    }
-    
-    // Add visual wireframe to show collider bounds
-    const colliderGeometry = new THREE.BoxGeometry(
-      platformWidth + 4, platformHeight + 4, platformDepth + 4
-    );
-    const colliderMaterial = new THREE.MeshBasicMaterial({
-      color: 0xff00ff,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.3
-    });
-    const colliderMesh = new THREE.Mesh(colliderGeometry, colliderMaterial);
-    colliderMesh.position.copy(platform.value.position);
-    scene.value.add(colliderMesh);
-    
-    return platformCollider.handle;
-  } catch (e) {
-    console.error("Error creating platform:", e);
-    return null;
-  }
-};
-
-// Add the missing createPlayer function
+// Modify the createPlayer function to better set up the player physics
 const createPlayer = () => {
   if (!scene.value || !physicsWorld.value) {
     console.error("Scene or physics world not initialized");
@@ -1262,11 +1132,11 @@ const createPlayer = () => {
     const spawnHeight = 31.5; // Just above platform at y=30
     const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
       .setTranslation(0, spawnHeight, 10)
-      .setCcdEnabled(true);
+      .setCcdEnabled(true); // Explicitly enable CCD if available
     
     playerBody.value = physicsWorld.value.createRigidBody(playerBodyDesc);
     
-    // Create player collider
+    // Create player collider with better settings
     const playerColliderDesc = RAPIER.ColliderDesc.capsule(
       playerHeight / 2 - playerRadius,
       playerRadius
@@ -1275,8 +1145,19 @@ const createPlayer = () => {
     .setRestitution(0.0)
     .setDensity(1.0);
     
+    // Try to enable CCD at collider level if the method exists
+    if (typeof playerColliderDesc.setCcd === 'function') {
+      playerColliderDesc.setCcd(true);
+    }
+    
+    // Create collider with explicit handle tracking
     const playerCollider = physicsWorld.value.createCollider(playerColliderDesc, playerBody.value);
     console.log("Player collider created:", playerCollider.handle);
+    
+    // Store the player collider handle for collision filtering
+    if (debugInfo) {
+      debugInfo.playerColliderHandle = playerCollider.handle;
+    }
     
     // Create player visual mesh
     const playerGeometry = new THREE.CapsuleGeometry(
@@ -1305,6 +1186,171 @@ const createPlayer = () => {
     createRayVisualizations();
   } catch (e) {
     console.error("Error creating player:", e);
+  }
+};
+
+// Add the missing createPlanet function before createPlayer
+const createPlanet = () => {
+  if (!scene.value || !physicsWorld.value) {
+    console.error("Scene or physics world not initialized");
+    return;
+  }
+  
+  try {
+    console.log("Creating planet...");
+    
+    // Create planet geometry - a large sphere
+    const planetRadius = 200;
+    const planetGeometry = new THREE.SphereGeometry(planetRadius, 64, 64);
+    
+    // Create material with some texture
+    const planetMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3366cc,
+      roughness: 0.8,
+      metalness: 0.2,
+    });
+    
+    // Create mesh
+    planet.value = new THREE.Mesh(planetGeometry, planetMaterial);
+    planet.value.position.set(0, -planetRadius - 30, 0); // Position below the platform
+    planet.value.receiveShadow = true;
+    scene.value.add(planet.value);
+    
+    // Create planet physics collider
+    const planetBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(
+        planet.value.position.x,
+        planet.value.position.y,
+        planet.value.position.z
+      );
+    
+    const planetBody = physicsWorld.value.createRigidBody(planetBodyDesc);
+    
+    // Create collider for the planet
+    const planetColliderDesc = RAPIER.ColliderDesc.ball(planetRadius)
+      .setFriction(0.8)
+      .setRestitution(0.2);
+    
+    const planetCollider = physicsWorld.value.createCollider(planetColliderDesc, planetBody);
+    
+    // Store handle for debugging
+    if (debugInfo) {
+      debugInfo.planetHandle = planetCollider.handle;
+    }
+    
+    console.log("Planet created successfully");
+    
+    // Make gravity center align with planet center
+    gravity.center.copy(planet.value.position);
+    
+    return planet.value;
+  } catch (e) {
+    console.error("Error creating planet:", e);
+    return null;
+  }
+};
+
+// Also add the missing createPlatform function
+const createPlatform = () => {
+  if (!scene.value || !physicsWorld.value) {
+    console.error("Scene or physics world not initialized");
+    return;
+  }
+  
+  try {
+    console.log("Creating platform...");
+    
+    // Create platform geometry
+    const platformWidth = 50;
+    const platformHeight = 2;
+    const platformDepth = 50;
+    const platformGeometry = new THREE.BoxGeometry(
+      platformWidth, platformHeight, platformDepth
+    );
+    
+    // Create material
+    const platformMaterial = new THREE.MeshStandardMaterial({
+      color: 0x888888,
+      roughness: 0.7,
+      metalness: 0.2
+    });
+    
+    // Create mesh
+    platform.value = new THREE.Mesh(platformGeometry, platformMaterial);
+    platform.value.position.set(0, 30, 0); // Position at y=30
+    platform.value.receiveShadow = true;
+    scene.value.add(platform.value);
+    
+    // Create platform physics body
+    const platformBodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(
+        platform.value.position.x,
+        platform.value.position.y,
+        platform.value.position.z
+      );
+    
+    const platformBody = physicsWorld.value.createRigidBody(platformBodyDesc);
+    
+    // Create collider
+    const platformColliderDesc = RAPIER.ColliderDesc.cuboid(
+      platformWidth / 2, platformHeight / 2, platformDepth / 2
+    )
+      .setFriction(0.8)
+      .setRestitution(0.2);
+    
+    const platformCollider = physicsWorld.value.createCollider(platformColliderDesc, platformBody);
+    
+    // Store handle for debugging
+    if (debugInfo) {
+      debugInfo.platformHandle = platformCollider.handle;
+    }
+    
+    console.log("Platform created successfully");
+    return platform.value;
+  } catch (e) {
+    console.error("Error creating platform:", e);
+    return null;
+  }
+};
+
+// Add the createStars function for background elements
+const createStars = () => {
+  if (!scene.value) return;
+  
+  try {
+    // Create stars (simple particles)
+    const starsGeometry = new THREE.BufferGeometry();
+    const starCount = 2000;
+    const positions = new Float32Array(starCount * 3);
+    
+    for (let i = 0; i < starCount; i++) {
+      const i3 = i * 3;
+      // Create stars in a large sphere around the scene
+      const radius = 500 + Math.random() * 500;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI;
+      
+      positions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+      positions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+      positions[i3 + 2] = radius * Math.cos(phi);
+    }
+    
+    starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    
+    // Star material
+    const starsMaterial = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 1,
+      sizeAttenuation: true
+    });
+    
+    // Create stars mesh
+    const stars = new THREE.Points(starsGeometry, starsMaterial);
+    scene.value.add(stars);
+    
+    console.log("Stars created successfully");
+  } catch (e) {
+    console.error("Error creating stars:", e);
   }
 };
 
