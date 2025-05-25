@@ -935,9 +935,9 @@ const createPushableRock = (position, scale = 1.0) => {
     
     // Create collider - using sphere for better rolling
     const rockColliderDesc = RAPIER.ColliderDesc.ball(2 * scale)
-      .setDensity(2.0) // Rocks are heavy
+      .setDensity(1.2) // Reduced from 2.0 to 1.2 for lighter rocks
       .setFriction(0.8)
-      .setRestitution(0.2);
+      .setRestitution(0.4); // Increased from 0.2 to 0.4 for more bounce
     
     const rockCollider = physicsWorld.value.createCollider(rockColliderDesc, rockBody);
     
@@ -1654,8 +1654,8 @@ const createPlatform = () => {
       platformHeight / 2,
       platformDepth / 2
     )
-    .setFriction(0.8)
-    .setRestitution(0.2);
+    .setFriction(0.8)  // Back to original value
+    .setRestitution(0.2);  // Back to original value
     
     const platformCollider = physicsWorld.value.createCollider(platformColliderDesc, platformBody);
     
@@ -1690,8 +1690,8 @@ const createPlatform = () => {
       wallHeight / 2,
       wallDepth / 2
     )
-    .setFriction(0.5)
-    .setRestitution(0.1);
+    .setFriction(0.5)  // Back to original value
+    .setRestitution(0.1);  // Back to original value
     
     const wallCollider = physicsWorld.value.createCollider(wallColliderDesc, wallBody);
     
@@ -1731,8 +1731,8 @@ const createPlatform = () => {
       0.5, // Half thickness
       rampDepth / 2
     )
-    .setFriction(0.7)
-    .setRestitution(0.1);
+    .setFriction(0.7)  // Back to original value
+    .setRestitution(0.1);  // Back to original value
     
     const rampCollider = physicsWorld.value.createCollider(rampColliderDesc, rampBody);
     
@@ -1740,10 +1740,10 @@ const createPlatform = () => {
       debugInfo.rampHandle = rampCollider.handle;
     }
     
-    // Calculate where the ramp top ends
+    // Calculate where the ramp top ends - FIXED calculation
     const rampTopOffset = Math.sin(rampAngle) * rampDepth / 2;
     const rampTopHeight = ramp.position.y + rampTopOffset;
-    const rampTopZ = ramp.position.z - Math.cos(rampAngle) * rampDepth / 2;
+    const rampTopZ = ramp.position.z + Math.cos(rampAngle) * rampDepth / 2; // Changed from minus to plus
     
     // Create moving platform at the top of the ramp
     const movingPlatformWidth = 8;
@@ -1765,7 +1765,7 @@ const createPlatform = () => {
     movingPlatform.value.position.set(
       -15, // Start at ramp X position
       rampTopHeight + movingPlatformHeight/2, // Position at ramp top
-      rampTopZ - movingPlatformDepth/2 - 1 // Slightly past ramp edge
+      rampTopZ + movingPlatformDepth/2 + 1 // Changed from minus to plus, and past the high edge
     );
     movingPlatform.value.receiveShadow = true;
     movingPlatform.value.castShadow = true;
@@ -1786,8 +1786,8 @@ const createPlatform = () => {
       movingPlatformHeight / 2,
       movingPlatformDepth / 2
     )
-    .setFriction(0.8)
-    .setRestitution(0.1);
+    .setFriction(5.0)  // Dramatically increased from 1.5 to 5.0 for maximum grip to drag player
+    .setRestitution(0.01);  // Further reduced from 0.05 to 0.01 for minimal bounce
     
     physicsWorld.value.createCollider(movingPlatformColliderDesc, movingPlatformBody.value);
     
@@ -1803,11 +1803,11 @@ const createPlatform = () => {
       movingPlatform.value.position.y, 
       movingPlatform.value.position.z);
     
-    // Add a pushable rock on the platform for testing
+    // Add a pushable rock at the edge of the platform for testing
     const rockOnPlatform = new THREE.Vector3(
-      0, 
+      20, // Near the edge of the platform (platform width is 50, so edge is at ±25)
       30 + platformHeight/2 + 3, // Platform surface + rock radius + small offset
-      -5
+      20  // Also near the edge in Z direction
     );
     createPushableRock(rockOnPlatform, 1.5); // Slightly larger rock
     
@@ -1990,8 +1990,10 @@ const createRayVisualizations = () => {
     player.value.add(centerRayLine.value);
     player.value.add(facingLine.value);
     
+    
     console.log("Ray visualizations created and attached to player");
   } catch (e) {
+
     console.error("Error creating ray visualizations:", e);
   }
 };
@@ -2002,6 +2004,7 @@ const updateRayVisualizations = (leftFoot, rightFoot, centerFoot, rayDirection, 
   
   try {
     // Convert world positions to local positions relative to player
+
     const worldToLocal = player.value.worldToLocal.bind(player.value);
     
     // Convert foot positions to local space
