@@ -97,7 +97,7 @@ const keys = reactive({
 // Physics settings
 const gravity = reactive({
   center: new THREE.Vector3(0, -230, 0), // Planet center position
-  strength: 50  // Reduced from 500 to 50 for more manageable gravity
+  strength: 25  // Reduced from 50 to 25 for lighter, more comfortable gravity
 });
 
 // Initialize debugInfo as a reactive object to store debugging information
