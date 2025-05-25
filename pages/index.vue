@@ -11,6 +11,7 @@
       <div>Position: {{ playerPosition.x.toFixed(2) }}, {{ playerPosition.y.toFixed(2) }}, {{ playerPosition.z.toFixed(2) }}</div>
       <div>Moving: {{ isMoving }}</div>
       <div>Speed: {{ currentSpeed.toFixed(2) }}</div>
+      <div>Facing: {{ playerFacing.x.toFixed(2) }}, {{ playerFacing.y.toFixed(2) }}, {{ playerFacing.z.toFixed(2) }}</div>
     </div>
   </div>
 </template>
@@ -39,6 +40,7 @@ const started = ref(false);
 const isGrounded = ref(false);
 const wasGrounded = ref(false);
 const playerPosition = ref(new THREE.Vector3());
+const playerFacing = ref(new THREE.Vector3(0, 0, -1)); // Add player facing direction
 const isMoving = ref(false);
 const currentSpeed = ref(0);
 const isCameraDetached = ref(false);
@@ -62,6 +64,7 @@ const clock = new THREE.Clock();
 const leftRayLine = shallowRef(null);
 const rightRayLine = shallowRef(null);
 const centerRayLine = shallowRef(null);
+const facingLine = shallowRef(null); // Add facing direction line
 
 // Physics
 const physicsWorld = shallowRef(null);
@@ -927,6 +930,10 @@ const updatePlayerTransform = () => {
     const rotation = playerBody.value.rotation();
     player.value.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
     
+    // Update facing direction for debug display
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.value.quaternion);
+    playerFacing.value.copy(forward);
+    
     // Update camera rotation based on grounded state
     if (isGrounded.value) {
       // When grounded, only apply pitch (X rotation)
@@ -1339,24 +1346,34 @@ const createRayVisualizations = () => {
       transparent: true
     });
     
+    // Create material for facing direction line
+    const facingMaterial = new THREE.LineBasicMaterial({ 
+      color: 0xff0000,
+      opacity: 0.8,
+      transparent: true,
+      linewidth: 3
+    });
+    
     // Create ray line geometries with proper buffer attributes
-    const createRayLine = () => {
+    const createRayLine = (material = rayMaterial) => {
       const geometry = new THREE.BufferGeometry();
       const positions = new Float32Array(6); // 2 vertices * 3 components
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geometry.setDrawRange(0, 2);
-      return new THREE.Line(geometry, rayMaterial.clone());
+      return new THREE.Line(geometry, material.clone());
     };
     
     // Create ray lines as children of the player so they follow automatically
     leftRayLine.value = createRayLine();
     rightRayLine.value = createRayLine();
     centerRayLine.value = createRayLine();
+    facingLine.value = createRayLine(facingMaterial);
     
     // Add rays to player instead of scene so they move with the player
     player.value.add(leftRayLine.value);
     player.value.add(rightRayLine.value);
     player.value.add(centerRayLine.value);
+    player.value.add(facingLine.value);
     
     console.log("Ray visualizations created and attached to player");
   } catch (e) {
@@ -1366,7 +1383,7 @@ const createRayVisualizations = () => {
 
 // Update the updateRayVisualizations function to work with local coordinates
 const updateRayVisualizations = (leftFoot, rightFoot, centerFoot, rayDirection, rayLength) => {
-  if (!leftRayLine.value || !rightRayLine.value || !centerRayLine.value || !player.value) return;
+  if (!leftRayLine.value || !rightRayLine.value || !centerRayLine.value || !facingLine.value || !player.value) return;
   
   try {
     // Convert world positions to local positions relative to player
@@ -1401,6 +1418,11 @@ const updateRayVisualizations = (leftFoot, rightFoot, centerFoot, rayDirection, 
     updateRayGeometry(leftRayLine.value, leftFootLocal, leftEndLocal);
     updateRayGeometry(rightRayLine.value, rightFootLocal, rightEndLocal);
     updateRayGeometry(centerRayLine.value, centerFootLocal, centerEndLocal);
+    
+    // Update facing direction line - show forward direction from player center
+    const playerCenter = new THREE.Vector3(0, 0, 0); // Local center
+    const facingEndLocal = new THREE.Vector3(0, 0, -3); // 3 units forward in local space
+    updateRayGeometry(facingLine.value, playerCenter, facingEndLocal);
     
     // Update colors based on hits
     leftRayLine.value.material.color.setHex(leftFootHit.value ? 0xff0000 : 0x00ff00);
