@@ -472,11 +472,11 @@ const createPlayer = () => {
     // Position player closer to platform - platform is at y=30, so spawn just above it
     const spawnHeight = 33; // Just 3 units above the platform for better detection
     
-    // Create player physics body as DYNAMIC but with locked rotation and high damping
+    // Create player physics body as DYNAMIC with much lower damping
     const playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, spawnHeight, 0)
       .lockRotations() // Prevent the capsule from tipping over
-      .setLinearDamping(0.9) // High damping for responsive control
+      .setLinearDamping(0.1) // Much lower damping for better movement
       .setAngularDamping(1.0); // Full angular damping
     
     playerBody.value = physicsWorld.value.createRigidBody(playerBodyDesc);
@@ -486,11 +486,11 @@ const createPlayer = () => {
       playerHeight / 2 - playerRadius,
       playerRadius
     )
-    .setFriction(0.7)
+    .setFriction(0.0) // Zero friction to prevent sticking
     .setRestitution(0.0)
     .setDensity(1.0)
     .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.DEFAULT)
-    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS); // Enable collision events
     
     // Create collider
     const playerCollider = physicsWorld.value.createCollider(playerColliderDesc, playerBody.value);
@@ -528,18 +528,44 @@ const createPlayer = () => {
     // Create ray visualizations
     createRayVisualizations();
     
+    // Set up collision handling
+    setupCollisionHandling();
+    
     console.log("Player created successfully at position:", spawnHeight);
   } catch (e) {
     console.error("Error creating player:", e);
   }
 };
 
-// Add missing checkGrounded function
+// Add collision tracking variables near other state variables
+const groundCollisions = shallowRef(new Set()); // Track which colliders we're touching
+const lastGroundContact = ref(0); // Track when we last had ground contact
+
+// Replace the checkGrounded function with collision-based detection
 const checkGrounded = () => {
   if (!playerBody.value || !physicsWorld.value) return;
   
   try {
-    // Get player position
+    // Check collision-based grounding
+    wasGrounded.value = isGrounded.value;
+    
+    // Ground detection based on collision events and velocity
+    const currentTime = performance.now();
+    const velocity = playerBody.value.linvel();
+    
+    // We're grounded if we have active ground collisions AND low downward velocity
+    const hasGroundCollisions = groundCollisions.value.size > 0;
+    const lowDownwardVelocity = velocity.y > -1.0; // Not falling fast
+    
+    // Simple collision-based grounding - if we're touching something and not falling fast
+    isGrounded.value = hasGroundCollisions && lowDownwardVelocity;
+    
+    // If we have collisions, update last ground contact time
+    if (hasGroundCollisions) {
+      lastGroundContact.value = currentTime;
+    }
+    
+    // Get player position for ray casting (for orientation only)
     const playerTranslation = playerBody.value.translation();
     const playerPos = new THREE.Vector3(
       playerTranslation.x,
@@ -547,42 +573,10 @@ const checkGrounded = () => {
       playerTranslation.z
     );
     
-    // For debugging, let's use simple downward ray initially
+    // Ray direction for gravity orientation
     rayDir.value = new THREE.Vector3(0, -1, 0);
     
-    // Cast ray from the bottom of the player capsule
-    const rayOrigin = {
-      x: playerPos.x,
-      y: playerPos.y - (playerHeight / 2), // Start from bottom of capsule
-      z: playerPos.z
-    };
-    
-    // Cast a single ray from player bottom
-    const ray = new RAPIER.Ray(rayOrigin, {
-      x: rayDir.value.x,
-      y: rayDir.value.y,
-      z: rayDir.value.z
-    });
-    
-    // Cast ray with distance appropriate for grounding detection
-    const maxDistance = 0.2; // Very short distance for precise grounding
-    const hit = physicsWorld.value.castRay(
-      ray,
-      maxDistance,
-      true, // solid
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      undefined,
-      undefined,
-      (colliderHandle) => {
-        // Filter out the player's own collider
-        if (debugInfo.playerColliderHandle && colliderHandle === debugInfo.playerColliderHandle) {
-          return false; // Exclude player's own collider
-        }
-        return true; // Include all other colliders
-      }
-    );
-    
-    // Update foot positions for visualization - use bottom of capsule positions
+    // Update foot positions for visualization rays (orientation purposes only)
     const playerQuat = new THREE.Quaternion(
       playerBody.value.rotation().x,
       playerBody.value.rotation().y,
@@ -602,8 +596,8 @@ const checkGrounded = () => {
     rightFootPos.value.copy(playerPos).add(rightOffset);
     centerFootPos.value.copy(playerPos).add(centerOffset);
     
-    // Cast visualization rays from foot positions
-    const castFootRay = (footPos) => {
+    // Cast rays for orientation detection (not grounding)
+    const castOrientationRay = (footPos) => {
       const footRay = new RAPIER.Ray(
         { x: footPos.x, y: footPos.y, z: footPos.z },
         { x: rayDir.value.x, y: rayDir.value.y, z: rayDir.value.z }
@@ -611,7 +605,7 @@ const checkGrounded = () => {
       
       return physicsWorld.value.castRay(
         footRay,
-        1.0, // visualization distance
+        2.0, // Longer distance for orientation detection
         true,
         RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
         undefined,
@@ -625,267 +619,86 @@ const checkGrounded = () => {
       );
     };
     
-    // Update foot hits for visualization
-    leftFootHit.value = castFootRay(leftFootPos.value);
-    rightFootHit.value = castFootRay(rightFootPos.value);
-    centerFootHit.value = castFootRay(centerFootPos.value);
+    // Update foot hits for visualization and orientation
+    leftFootHit.value = castOrientationRay(leftFootPos.value);
+    rightFootHit.value = castOrientationRay(rightFootPos.value);
+    centerFootHit.value = castOrientationRay(centerFootPos.value);
     
-    // Determine grounded state based on main ray
-    const groundThreshold = 0.1; // Very tight threshold for grounding
-    wasGrounded.value = isGrounded.value;
-    
-    // Check if we have a hit and it's within threshold
-    if (hit && hit.toi !== undefined && hit.toi < groundThreshold) {
-      isGrounded.value = true;
-      // Store the ground hit info for use in ground following
-      centerFootHit.value = hit;
-      
-      if (!wasGrounded.value) {
-        console.log("Player landed at distance:", hit.toi);
-      }
-    } else {
-      isGrounded.value = false;
-      
-      if (wasGrounded.value) {
-        console.log("Player became airborne");
+    // Log grounding state changes
+    if (isGrounded.value !== wasGrounded.value) {
+      if (isGrounded.value) {
+        console.log("Player became grounded (collision-based) - Collisions:", groundCollisions.value.size);
+      } else {
+        console.log("Player became airborne (collision-based) - Collisions:", groundCollisions.value.size);
       }
     }
     
-    // Debug logging with proper null checks
-    if (frameCount.value % 60 === 0) { // Log every second
-      const hitDistance = hit && hit.toi !== undefined ? hit.toi.toFixed(3) : "none";
-      const velocity = playerBody.value.linvel();
-      console.log("Ground check - Player pos:", playerPos.y.toFixed(2), "Hit:", hitDistance, "Grounded:", isGrounded.value, "Vel Y:", velocity.y.toFixed(2));
-      if (hit && hit.normal) {
-        console.log("Hit normal:", hit.normal.x.toFixed(2), hit.normal.y.toFixed(2), hit.normal.z.toFixed(2));
-      }
+    // Debug logging every 30 frames
+    if (frameCount.value % 30 === 0) {
+      console.log("Ground check - Collisions:", groundCollisions.value.size, "Grounded:", isGrounded.value, "Vel Y:", velocity.y.toFixed(2));
     }
   } catch (e) {
     console.error("Error checking grounded state:", e);
   }
 };
 
-// New consolidated movement function that handles everything
-const handleAllMovement = (deltaTime) => {
-  if (!playerBody.value || !started.value) return;
+// Add collision event handling after createPlayer function
+const setupCollisionHandling = () => {
+  if (!physicsWorld.value) return;
   
-  // Get current position and velocity
-  const playerTranslation = playerBody.value.translation();
-  const currentVelocity = playerBody.value.linvel();
-  const playerPos = new THREE.Vector3(
-    playerTranslation.x,
-    playerTranslation.y,
-    playerTranslation.z
-  );
+  // Set up collision event handling
+  physicsWorld.value.eventQueue = new RAPIER.EventQueue(true);
   
-  // Calculate desired velocity
-  let desiredVelocity = {
-    x: currentVelocity.x,
-    y: currentVelocity.y,
-    z: currentVelocity.z
-  };
-  
-  // Handle position updates
-  if (isGrounded.value) {
-    // GROUNDED STATE - Control movement via velocity
-    if (frameCount.value % 60 === 0) {
-      console.log("Player is grounded - applying ground movement");
-    }
-    
-    // Stop downward velocity when grounded and apply slight upward force to stay on surface
-    if (currentVelocity.y < 0) {
-      desiredVelocity.y = 0; // Stop falling
-    }
-    
-    // Handle horizontal movement input
-    const moveSpeed = keys.run ? runSpeed : walkSpeed;
-    const moveDir = new THREE.Vector3(0, 0, 0);
-    
-    // Get input direction
-    if (keys.forward) moveDir.z -= 1;
-    if (keys.backward) moveDir.z += 1;
-    if (keys.left) moveDir.x -= 1;
-    if (keys.right) moveDir.x += 1;
-    
-    if (moveDir.length() > 0) {
-      moveDir.normalize();
-      isMoving.value = true;
-      currentSpeed.value = moveSpeed;
-      
-      // Simple movement without camera rotation for debugging
-      desiredVelocity.x = moveDir.x * moveSpeed;
-      desiredVelocity.z = moveDir.z * moveSpeed;
-      
-      console.log("Movement input:", moveDir.x.toFixed(2), moveDir.z.toFixed(2), "Desired vel:", desiredVelocity.x.toFixed(2), desiredVelocity.z.toFixed(2));
-    } else {
-      isMoving.value = false;
-      currentSpeed.value = 0;
-      // Apply horizontal damping when not moving
-      desiredVelocity.x = currentVelocity.x * 0.8;
-      desiredVelocity.z = currentVelocity.z * 0.8;
-    }
-    
-    // Handle jumping
-    if (keys.jump && !jumpInProgress.value) {
-      jumpInProgress.value = true;
-      jumpTime.value = 0;
-      desiredVelocity.y = jumpForce; // Apply immediate upward velocity
-      console.log("Jump started");
-    }
-  } else {
-    // AIRBORNE STATE - Limited control, let physics handle gravity
-    if (frameCount.value % 60 === 0) {
-      console.log("Player is airborne - applying air control");
-    }
-    isMoving.value = false;
-    currentSpeed.value = 0;
-    
-    // Limited air control
-    const moveDir = new THREE.Vector3(0, 0, 0);
-    if (keys.forward) moveDir.z -= 1;
-    if (keys.backward) moveDir.z += 1;
-    if (keys.left) moveDir.x -= 1;
-    if (keys.right) moveDir.x += 1;
-    
-    if (moveDir.length() > 0) {
-      moveDir.normalize();
-      
-      const airControlStrength = walkSpeed * 0.1; // Reduced air control
-      desiredVelocity.x = currentVelocity.x + moveDir.x * airControlStrength;
-      desiredVelocity.z = currentVelocity.z + moveDir.z * airControlStrength;
-    }
-    
-    // Let gravity handle Y velocity naturally
-    // Don't modify desiredVelocity.y in air
-  }
-  
-  // Handle jump progression
-  if (jumpInProgress.value) {
-    jumpTime.value += deltaTime;
-    if (jumpTime.value >= jumpDuration) {
-      jumpInProgress.value = false;
-      console.log("Jump ended");
-    }
-  }
-  
-  // Apply the desired velocity
-  playerBody.value.setLinvel(desiredVelocity, true);
+  console.log("Collision event handling set up");
 };
 
-// Add collision checking function
-const checkCollisionBeforeMove = (currentPos, targetPos) => {
-  if (!physicsWorld.value || !playerBody.value) return targetPos;
+// Add function to process collision events
+const processCollisionEvents = () => {
+  if (!physicsWorld.value?.eventQueue || !playerBody.value) return;
   
   try {
-    // Calculate movement vector
-    const movement = new THREE.Vector3(
-      targetPos.x - currentPos.x,
-      targetPos.y - currentPos.y,
-      targetPos.z - currentPos.z
-    );
-    
-    const movementLength = movement.length();
-    
-    // If no movement, return target position
-    if (movementLength < 0.001) {
-      return targetPos;
-    }
-    
-    // Normalize movement direction
-    const moveDir = movement.clone().normalize();
-    
-    // For kinematic bodies, we'll use multiple ray casts instead of shape cast
-    // since shape cast API is more complex and error-prone
-    
-    // Cast rays from multiple points around the player capsule
-    const rayOrigins = [
-      // Center ray
-      { x: currentPos.x, y: currentPos.y, z: currentPos.z },
-      // Top of capsule
-      { x: currentPos.x, y: currentPos.y + (playerHeight * 0.4), z: currentPos.z },
-      // Bottom of capsule  
-      { x: currentPos.x, y: currentPos.y - (playerHeight * 0.4), z: currentPos.z },
-      // Side rays (left/right/front/back at player center height)
-      { x: currentPos.x + playerRadius * 0.8, y: currentPos.y, z: currentPos.z },
-      { x: currentPos.x - playerRadius * 0.8, y: currentPos.y, z: currentPos.z },
-      { x: currentPos.x, y: currentPos.y, z: currentPos.z + playerRadius * 0.8 },
-      { x: currentPos.x, y: currentPos.y, z: currentPos.z - playerRadius * 0.8 }
-    ];
-    
-    let closestHit = null;
-    let closestDistance = movementLength;
-    
-    // Cast rays from each origin point
-    for (const origin of rayOrigins) {
-      const ray = new RAPIER.Ray(origin, {
-        x: moveDir.x,
-        y: moveDir.y,
-        z: moveDir.z
-      });
+    physicsWorld.value.eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+      // Check if one of the colliders belongs to the player
+      let playerColliderHandle = null;
+      let otherColliderHandle = null;
       
-      const hit = physicsWorld.value.castRay(
-        ray,
-        movementLength + 0.1, // Add small buffer
-        true, // solid
-        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-        undefined,
-        undefined,
-        (colliderHandle) => {
-          // Filter out the player's own collider
-          const collider = physicsWorld.value.getCollider(colliderHandle);
-          if (collider) {
-            const body = collider.parent();
-            if (body && body.handle === playerBody.value.handle) {
-              return false; // Exclude player's own collider
-            }
-          }
-          return true; // Include all other colliders
+      if (debugInfo.playerColliderHandle) {
+        if (handle1 === debugInfo.playerColliderHandle) {
+          playerColliderHandle = handle1;
+          otherColliderHandle = handle2;
+        } else if (handle2 === debugInfo.playerColliderHandle) {
+          playerColliderHandle = handle2;
+          otherColliderHandle = handle1;
         }
-      );
-      
-      if (hit && hit.toi !== undefined && hit.toi < closestDistance) {
-        closestHit = hit;
-        closestDistance = hit.toi;
       }
-    }
-    
-    if (closestHit) {
-      // Collision detected, stop at safe distance before collision
-      const safeDistance = Math.max(0, closestDistance - 0.05); // Stop 5cm before collision
       
-      if (safeDistance > 0.001) {
-        // Move up to the safe distance
-        const safeMovement = moveDir.multiplyScalar(safeDistance);
-        return {
-          x: currentPos.x + safeMovement.x,
-          y: currentPos.y + safeMovement.y,
-          z: currentPos.z + safeMovement.z
-        };
-      } else {
-        // Can't move at all, stay in current position
-        return {
-          x: currentPos.x,
-          y: currentPos.y,
-          z: currentPos.z
-        };
+      if (playerColliderHandle) {
+        const currentTime = performance.now();
+        
+        if (started) {
+          // Collision started - add to ground collisions
+          groundCollisions.value.add(otherColliderHandle);
+          lastGroundContact.value = currentTime;
+          
+          if (frameCount.value % 10 === 0) { // Reduced logging frequency
+            console.log("Collision started with handle:", otherColliderHandle, "Total collisions:", groundCollisions.value.size);
+          }
+        } else {
+          // Collision ended - remove from ground collisions
+          groundCollisions.value.delete(otherColliderHandle);
+          
+          if (frameCount.value % 10 === 0) { // Reduced logging frequency
+            console.log("Collision ended with handle:", otherColliderHandle, "Remaining collisions:", groundCollisions.value.size);
+          }
+        }
       }
-    }
-    
-    // No collision, safe to move to target position
-    return targetPos;
-    
+    });
   } catch (e) {
-    console.error("Error in collision check:", e);
-    // On error, return current position to be safe
-    return {
-      x: currentPos.x,
-      y: currentPos.y,
-      z: currentPos.z
-    };
+    console.error("Error processing collision events:", e);
   }
 };
 
-// Add missing animate function
+// Modify the animate function to include collision event processing
 const animate = () => {
   if (!started.value) return;
   
@@ -906,6 +719,8 @@ const animate = () => {
     if (physicsWorld.value) {
       try {
         physicsWorld.value.step();
+        // Process collision events after physics step
+        processCollisionEvents();
       } catch (e) {
         console.error("Error stepping physics world:", e);
       }
@@ -930,9 +745,8 @@ const animate = () => {
     // Update visual transform after physics
     updatePlayerTransform();
     
-    // Update ray visualizations
+    // Update ray visualizations (for orientation only)
     if (player.value && rayDir.value) {
-      // Use the actual calculated foot positions from checkGrounded
       updateRayVisualizations(
         leftFootPos.value.clone(), 
         rightFootPos.value.clone(), 
@@ -1340,8 +1154,8 @@ const createRamp = () => {
     // Position ramp lower and closer to platform edge for easier access
     ramp.position.set(15, 30 - 1, 0); // Moved closer (15 instead of 18) and lowered by 1 unit
     
-    // Rotate the ramp to create a gentler incline (15 degrees instead of 25)
-    ramp.rotation.z = -Math.PI / 12; // About 15 degrees (gentler slope)
+    // Rotate the ramp to create a much gentler incline (8 degrees instead of 15)
+    ramp.rotation.z = -Math.PI / 22.5; // About 8 degrees (much gentler slope)
     
     ramp.receiveShadow = true;
     ramp.castShadow = true;
@@ -1350,7 +1164,7 @@ const createRamp = () => {
     // Create physics body for ramp
     const rampBodyDesc = RAPIER.RigidBodyDesc.fixed()
       .setTranslation(ramp.position.x, ramp.position.y, ramp.position.z)
-      .setRotation({ x: 0, y: 0, z: -Math.PI / 12, w: Math.cos(Math.PI / 24) }); // Convert rotation to quaternion
+      .setRotation({ x: 0, y: 0, z: -Math.PI / 22.5, w: Math.cos(Math.PI / 45) }); // Convert rotation to quaternion
     
     const rampBody = physicsWorld.value.createRigidBody(rampBodyDesc);
     const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
@@ -1358,8 +1172,8 @@ const createRamp = () => {
       rampHeight / 2,
       rampDepth / 2
     )
-    .setFriction(0.7) // Slightly less friction for sliding
-    .setRestitution(0.1);
+    .setFriction(0.3) // Much lower friction for easier climbing
+    .setRestitution(0.0); // No bounce to prevent sliding back
     
     const rampCollider = physicsWorld.value.createCollider(rampColliderDesc, rampBody);
     
@@ -1367,7 +1181,7 @@ const createRamp = () => {
       debugInfo.rampHandle = rampCollider.handle;
     }
     
-    console.log("Ramp created successfully at position:", ramp.position);
+    console.log("Ramp created successfully at position:", ramp.position, "with low friction:", 0.3);
     return ramp;
   } catch (e) {
     console.error("Error creating ramp:", e);
@@ -1486,6 +1300,130 @@ onBeforeUnmount(() => {
     document.exitPointerLock();
   }
 });
+
+// Add the missing handleAllMovement function before the animate function
+const handleAllMovement = (deltaTime) => {
+  if (!playerBody.value || !physicsWorld.value) return;
+  
+  try {
+    const velocity = playerBody.value.linvel();
+    
+    // Calculate movement input
+    let moveX = 0;
+    let moveZ = 0;
+    
+    if (keys.forward) moveZ -= 1;
+    if (keys.backward) moveZ += 1;
+    if (keys.left) moveX -= 1;
+    if (keys.right) moveX += 1;
+    
+    // Normalize movement vector
+    const moveLength = Math.sqrt(moveX * moveX + moveZ * moveZ);
+    if (moveLength > 0) {
+      moveX /= moveLength;
+      moveZ /= moveLength;
+    }
+    
+    // Apply speed
+    const speed = keys.run ? runSpeed : walkSpeed;
+    moveX *= speed;
+    moveZ *= speed;
+    
+    // Update isMoving and currentSpeed for UI
+    isMoving.value = moveLength > 0;
+    currentSpeed.value = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    
+    // Get player's forward and right vectors
+    const playerQuat = new THREE.Quaternion(
+      playerBody.value.rotation().x,
+      playerBody.value.rotation().y,
+      playerBody.value.rotation().z,
+      playerBody.value.rotation().w
+    );
+    
+    // Calculate movement direction in world space
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerQuat);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerQuat);
+    
+    // Calculate final movement vector
+    const moveDir = new THREE.Vector3();
+    moveDir.addScaledVector(forward, moveZ);
+    moveDir.addScaledVector(right, moveX);
+    
+    // Apply movement forces - use impulses instead of direct velocity for better physics
+    let newVelX = velocity.x;
+    let newVelZ = velocity.z;
+    
+    if (isGrounded.value) {
+      // Ground movement - apply impulses for more responsive control
+      const groundAccel = 50.0; // Acceleration on ground
+      newVelX += moveDir.x * groundAccel * deltaTime;
+      newVelZ += moveDir.z * groundAccel * deltaTime;
+      
+      // Apply ground friction when not moving
+      if (moveLength === 0) {
+        newVelX *= 0.8; // Ground friction
+        newVelZ *= 0.8;
+      }
+      
+      // Clamp to max speed
+      const currentHorizontalSpeed = Math.sqrt(newVelX * newVelX + newVelZ * newVelZ);
+      if (currentHorizontalSpeed > speed) {
+        const scale = speed / currentHorizontalSpeed;
+        newVelX *= scale;
+        newVelZ *= scale;
+      }
+    } else {
+      // Air movement - reduced control
+      const airControl = 10.0;
+      newVelX += moveDir.x * airControl * deltaTime;
+      newVelZ += moveDir.z * airControl * deltaTime;
+      
+      // Apply air resistance
+      newVelX *= 0.99;
+      newVelZ *= 0.99;
+    }
+    
+    // Handle jumping
+    let newVelY = velocity.y;
+    
+    if (keys.jump && isGrounded.value && !jumpInProgress.value) {
+      newVelY = jumpForce;
+      jumpInProgress.value = true;
+      jumpTime.value = 0;
+      console.log("Jump initiated with force:", jumpForce);
+    }
+    
+    // Update jump progress
+    if (jumpInProgress.value) {
+      jumpTime.value += deltaTime;
+      if (jumpTime.value >= jumpDuration || isGrounded.value) {
+        jumpInProgress.value = false;
+      }
+    }
+    
+    // Apply gravity when not grounded
+    if (!isGrounded.value) {
+      newVelY += -20 * deltaTime; // Standard gravity
+    }
+    
+    // Apply the new velocity
+    playerBody.value.setLinvel({
+      x: newVelX,
+      y: newVelY,
+      z: newVelZ
+    }, true);
+    
+    // Debug logging for movement
+    if (frameCount.value % 60 === 0 && (moveLength > 0 || !isGrounded.value)) {
+      console.log("Movement - Input:", moveLength.toFixed(2), "Dir:", moveDir.x.toFixed(2), moveDir.z.toFixed(2), 
+                  "Vel:", newVelX.toFixed(2), newVelY.toFixed(2), newVelZ.toFixed(2),
+                  "Grounded:", isGrounded.value, "Collisions:", groundCollisions.value.size);
+    }
+  } catch (e) {
+    console.error("Error in handleAllMovement:", e);
+  }
+};
 </script>
 
 <style>
