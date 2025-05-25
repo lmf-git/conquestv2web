@@ -1786,8 +1786,8 @@ const createPlatform = () => {
       movingPlatformHeight / 2,
       movingPlatformDepth / 2
     )
-    .setFriction(5.0)  // Dramatically increased from 1.5 to 5.0 for maximum grip to drag player
-    .setRestitution(0.01);  // Further reduced from 0.05 to 0.01 for minimal bounce
+    .setFriction(26.0)  // Increased from 2.5 to 4.0 for better grip while still allowing walking
+    .setRestitution(0.01);  // Keep minimal bounce
     
     physicsWorld.value.createCollider(movingPlatformColliderDesc, movingPlatformBody.value);
     
