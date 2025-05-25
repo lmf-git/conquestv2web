@@ -166,15 +166,17 @@ const onMouseMove = (event) => {
   const groundTurnSensitivity = 0.0008;
   
   try {
-    // Always update camera pitch
-    cameraRotation.value.x -= event.movementY * lookSensitivity;
-    cameraRotation.value.x = Math.max(
-      -Math.PI / 2 + 0.01, 
-      Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
-    );
-    
     if (isGrounded.value && playerBody.value) {
-      // On ground - rotate around surface normal
+      // When grounded - limited camera pitch, player body rotates around surface normal
+      
+      // Update camera pitch with limits
+      cameraRotation.value.x -= event.movementY * lookSensitivity;
+      cameraRotation.value.x = Math.max(
+        -Math.PI / 2 + 0.01, 
+        Math.min(Math.PI / 2 - 0.01, cameraRotation.value.x)
+      );
+      
+      // Rotate player body around surface normal for yaw
       const { groundNormal } = getGroundNormal();
       
       if (Math.abs(event.movementX) > 1) {
@@ -201,13 +203,47 @@ const onMouseMove = (event) => {
         }
       }
       
+      // Reset camera yaw when grounded
       cameraRotation.value.y = 0;
+      cameraRotation.value.z = 0;
     } else {
-      // In space - full quaternion rotation
-      cameraRotation.value.y -= event.movementX * lookSensitivity;
+      // When falling/airborne - full quaternion rotation of entire player
       
-      // Apply roll with Q/E keys if desired
-      // This gives full 6DOF control in space
+      // Calculate rotation changes
+      const pitchChange = -event.movementY * lookSensitivity;
+      const yawChange = -event.movementX * lookSensitivity;
+      
+      // Create rotation quaternions for pitch and yaw
+      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchChange);
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawChange);
+      
+      // Get current player rotation
+      const currentQuat = new THREE.Quaternion(
+        playerBody.value.rotation().x,
+        playerBody.value.rotation().y,
+        playerBody.value.rotation().z,
+        playerBody.value.rotation().w
+      );
+      
+      // Apply rotations in correct order: yaw first (around world up), then pitch (around local right)
+      // For local pitch rotation, we need to apply it in the player's local space
+      const localRight = new THREE.Vector3(1, 0, 0).applyQuaternion(currentQuat);
+      const localPitchQuat = new THREE.Quaternion().setFromAxisAngle(localRight, pitchChange);
+      
+      // Apply yaw around world Y axis, then pitch around local right axis
+      currentQuat.premultiply(yawQuat);
+      currentQuat.premultiply(localPitchQuat);
+      
+      // Update player body rotation
+      playerBody.value.setRotation(
+        { x: currentQuat.x, y: currentQuat.y, z: currentQuat.z, w: currentQuat.w },
+        true
+      );
+      
+      // Reset camera rotation when airborne - player handles all rotation
+      cameraRotation.value.x = 0;
+      cameraRotation.value.y = 0;
+      cameraRotation.value.z = 0;
     }
   } catch (e) {
     console.error("Error in mouse move:", e);
@@ -229,12 +265,32 @@ const onPointerLockChange = () => {
 
 // Add missing resetCameraForAirborne function
 const resetCameraForAirborne = () => {
-  // Save player's current yaw rotation before switching to camera-based rotation
-  if (player.value) {
-    // Extract yaw from player's current quaternion
-    const playerEuler = new THREE.Euler().setFromQuaternion(player.value.quaternion, 'YXZ');
-    // Set camera's yaw to match player's current direction
-    cameraRotation.value.y = playerEuler.y;
+  // When transitioning to airborne, transfer camera pitch to player rotation
+  if (player.value && isGrounded.value) {
+    // Get current player quaternion
+    const currentPlayerQuat = new THREE.Quaternion(
+      playerBody.value.rotation().x,
+      playerBody.value.rotation().y,
+      playerBody.value.rotation().z,
+      playerBody.value.rotation().w
+    );
+    
+    // Apply current camera pitch to player rotation
+    const localRight = new THREE.Vector3(1, 0, 0).applyQuaternion(currentPlayerQuat);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(localRight, cameraRotation.value.x);
+    
+    currentPlayerQuat.premultiply(pitchQuat);
+    
+    // Update player body with new rotation
+    playerBody.value.setRotation(
+      { x: currentPlayerQuat.x, y: currentPlayerQuat.y, z: currentPlayerQuat.z, w: currentPlayerQuat.w },
+      true
+    );
+    
+    // Reset camera rotation
+    cameraRotation.value.x = 0;
+    cameraRotation.value.y = 0;
+    cameraRotation.value.z = 0;
   }
 };
 
@@ -669,6 +725,11 @@ const checkGrounded = () => {
                       (hasRayHits && lowDownwardVelocity) ||
                       (recentGroundContact && Math.abs(velocity.dot(gravityDir)) < 0.5);
     
+    // Handle transition from grounded to airborne
+    if (wasGrounded.value && !isGrounded.value) {
+      resetCameraForAirborne();
+    }
+    
     // If we have collisions or ray hits, update last ground contact time
     if (hasGroundCollisions || hasRayHits) {
       lastGroundContact.value = currentTime;
@@ -936,14 +997,14 @@ const updatePlayerTransform = () => {
     
     // Update camera rotation based on grounded state
     if (isGrounded.value) {
-      // When grounded, only apply pitch (X rotation)
+      // When grounded, apply camera pitch but no yaw/roll (player body handles yaw)
       camera.value.rotation.x = cameraRotation.value.x;
       camera.value.rotation.y = 0;
       camera.value.rotation.z = 0;
     } else {
-      // When in air, apply both pitch and yaw
-      camera.value.rotation.x = cameraRotation.value.x;
-      camera.value.rotation.y = cameraRotation.value.y;
+      // When airborne, camera follows player rotation exactly (no additional rotation)
+      camera.value.rotation.x = 0;
+      camera.value.rotation.y = 0;
       camera.value.rotation.z = 0;
     }
   } catch (e) {
