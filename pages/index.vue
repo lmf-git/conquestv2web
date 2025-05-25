@@ -541,117 +541,6 @@ const createPlayer = () => {
 const groundCollisions = shallowRef(new Set()); // Track which colliders we're touching
 const lastGroundContact = ref(0); // Track when we last had ground contact
 
-// Replace the checkGrounded function with collision-based detection
-const checkGrounded = () => {
-  if (!playerBody.value || !physicsWorld.value) return;
-  
-  try {
-    // Check collision-based grounding
-    wasGrounded.value = isGrounded.value;
-    
-    // Ground detection based on collision events and velocity
-    const currentTime = performance.now();
-    const velocity = playerBody.value.linvel();
-    
-    // We're grounded if we have active ground collisions AND low downward velocity
-    const hasGroundCollisions = groundCollisions.value.size > 0;
-    const lowDownwardVelocity = velocity.y > -1.0; // Not falling fast
-    
-    // Simple collision-based grounding - if we're touching something and not falling fast
-    isGrounded.value = hasGroundCollisions && lowDownwardVelocity;
-    
-    // If we have collisions, update last ground contact time
-    if (hasGroundCollisions) {
-      lastGroundContact.value = currentTime;
-    }
-    
-    // Get player position for ray casting (for orientation only)
-    const playerTranslation = playerBody.value.translation();
-    const playerPos = new THREE.Vector3(
-      playerTranslation.x,
-      playerTranslation.y,
-      playerTranslation.z
-    );
-    
-    // Ray direction for gravity orientation
-    rayDir.value = new THREE.Vector3(0, -1, 0);
-    
-    // Update foot positions for visualization rays (orientation purposes only)
-    const playerQuat = new THREE.Quaternion(
-      playerBody.value.rotation().x,
-      playerBody.value.rotation().y,
-      playerBody.value.rotation().z,
-      playerBody.value.rotation().w
-    );
-    
-    const footOffset = playerRadius * 0.8;
-    const footLevel = -playerHeight * 0.5; // Bottom of capsule
-    
-    // Calculate foot positions at bottom of capsule
-    const leftOffset = new THREE.Vector3(-footOffset, footLevel, 0).applyQuaternion(playerQuat);
-    const rightOffset = new THREE.Vector3(footOffset, footLevel, 0).applyQuaternion(playerQuat);
-    const centerOffset = new THREE.Vector3(0, footLevel, 0).applyQuaternion(playerQuat);
-    
-    leftFootPos.value.copy(playerPos).add(leftOffset);
-    rightFootPos.value.copy(playerPos).add(rightOffset);
-    centerFootPos.value.copy(playerPos).add(centerOffset);
-    
-    // Cast rays for orientation detection (not grounding)
-    const castOrientationRay = (footPos) => {
-      const footRay = new RAPIER.Ray(
-        { x: footPos.x, y: footPos.y, z: footPos.z },
-        { x: rayDir.value.x, y: rayDir.value.y, z: rayDir.value.z }
-      );
-      
-      return physicsWorld.value.castRay(
-        footRay,
-        2.0, // Longer distance for orientation detection
-        true,
-        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-        undefined,
-        undefined,
-        (colliderHandle) => {
-          if (debugInfo.playerColliderHandle && colliderHandle === debugInfo.playerColliderHandle) {
-            return false;
-          }
-          return true;
-        }
-      );
-    };
-    
-    // Update foot hits for visualization and orientation
-    leftFootHit.value = castOrientationRay(leftFootPos.value);
-    rightFootHit.value = castOrientationRay(rightFootPos.value);
-    centerFootHit.value = castOrientationRay(centerFootPos.value);
-    
-    // Log grounding state changes
-    if (isGrounded.value !== wasGrounded.value) {
-      if (isGrounded.value) {
-        console.log("Player became grounded (collision-based) - Collisions:", groundCollisions.value.size);
-      } else {
-        console.log("Player became airborne (collision-based) - Collisions:", groundCollisions.value.size);
-      }
-    }
-    
-    // Debug logging every 30 frames
-    if (frameCount.value % 30 === 0) {
-      console.log("Ground check - Collisions:", groundCollisions.value.size, "Grounded:", isGrounded.value, "Vel Y:", velocity.y.toFixed(2));
-    }
-  } catch (e) {
-    console.error("Error checking grounded state:", e);
-  }
-};
-
-// Add collision event handling after createPlayer function
-const setupCollisionHandling = () => {
-  if (!physicsWorld.value) return;
-  
-  // Set up collision event handling
-  physicsWorld.value.eventQueue = new RAPIER.EventQueue(true);
-  
-  console.log("Collision event handling set up");
-};
-
 // Add function to process collision events
 const processCollisionEvents = () => {
   if (!physicsWorld.value?.eventQueue || !playerBody.value) return;
@@ -680,16 +569,12 @@ const processCollisionEvents = () => {
           groundCollisions.value.add(otherColliderHandle);
           lastGroundContact.value = currentTime;
           
-          if (frameCount.value % 10 === 0) { // Reduced logging frequency
-            console.log("Collision started with handle:", otherColliderHandle, "Total collisions:", groundCollisions.value.size);
-          }
+          console.log("Collision started with handle:", otherColliderHandle, "Total collisions:", groundCollisions.value.size);
         } else {
           // Collision ended - remove from ground collisions
           groundCollisions.value.delete(otherColliderHandle);
           
-          if (frameCount.value % 10 === 0) { // Reduced logging frequency
-            console.log("Collision ended with handle:", otherColliderHandle, "Remaining collisions:", groundCollisions.value.size);
-          }
+          console.log("Collision ended with handle:", otherColliderHandle, "Remaining collisions:", groundCollisions.value.size);
         }
       }
     });
@@ -698,7 +583,137 @@ const processCollisionEvents = () => {
   }
 };
 
-// Modify the animate function to include collision event processing
+// Replace the checkGrounded function with improved collision and ray-based detection
+const checkGrounded = () => {
+  if (!playerBody.value || !physicsWorld.value) return;
+  
+  try {
+    // Check collision-based grounding
+    wasGrounded.value = isGrounded.value;
+    
+    // Ground detection based on collision events and velocity
+    const currentTime = performance.now();
+    const velocity = playerBody.value.linvel();
+    
+    // Get player position for ray casting
+    const playerTranslation = playerBody.value.translation();
+    const playerPos = new THREE.Vector3(
+      playerTranslation.x,
+      playerTranslation.y,
+      playerTranslation.z
+    );
+    
+    // Ray direction for gravity orientation
+    rayDir.value = new THREE.Vector3(0, -1, 0);
+    
+    // Update foot positions for ray casting
+    const playerQuat = new THREE.Quaternion(
+      playerBody.value.rotation().x,
+      playerBody.value.rotation().y,
+      playerBody.value.rotation().z,
+      playerBody.value.rotation().w
+    );
+    
+    const footOffset = playerRadius * 0.8;
+    const footLevel = -playerHeight * 0.5; // Bottom of capsule
+    
+    // Calculate foot positions at bottom of capsule
+    const leftOffset = new THREE.Vector3(-footOffset, footLevel, 0).applyQuaternion(playerQuat);
+    const rightOffset = new THREE.Vector3(footOffset, footLevel, 0).applyQuaternion(playerQuat);
+    const centerOffset = new THREE.Vector3(0, footLevel, 0).applyQuaternion(playerQuat);
+    
+    leftFootPos.value.copy(playerPos).add(leftOffset);
+    rightFootPos.value.copy(playerPos).add(rightOffset);
+    centerFootPos.value.copy(playerPos).add(centerOffset);
+    
+    // Cast rays for grounding detection
+    const castGroundingRay = (footPos) => {
+      const footRay = new RAPIER.Ray(
+        { x: footPos.x, y: footPos.y, z: footPos.z },
+        { x: rayDir.value.x, y: rayDir.value.y, z: rayDir.value.z }
+      );
+      
+      return physicsWorld.value.castRay(
+        footRay,
+        0.2, // Short distance for grounding detection
+        true,
+        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+        undefined,
+        undefined,
+        (colliderHandle) => {
+          if (debugInfo.playerColliderHandle && colliderHandle === debugInfo.playerColliderHandle) {
+            return false;
+          }
+          return true;
+        }
+      );
+    };
+    
+    // Update foot hits for grounding
+    leftFootHit.value = castGroundingRay(leftFootPos.value);
+    rightFootHit.value = castGroundingRay(rightFootPos.value);
+    centerFootHit.value = castGroundingRay(centerFootPos.value);
+    
+    // Determine grounding based on multiple criteria
+    const hasGroundCollisions = groundCollisions.value.size > 0;
+    const hasRayHits = leftFootHit.value || rightFootHit.value || centerFootHit.value;
+    const lowDownwardVelocity = velocity.y > -2.0; // Not falling fast
+    const recentGroundContact = (currentTime - lastGroundContact.value) < 200; // 200ms grace period
+    
+    // We're grounded if:
+    // 1. We have active collisions AND low velocity, OR
+    // 2. We have ray hits to ground AND low velocity, OR
+    // 3. We had recent ground contact AND very low velocity
+    isGrounded.value = (hasGroundCollisions && lowDownwardVelocity) || 
+                      (hasRayHits && lowDownwardVelocity) ||
+                      (recentGroundContact && velocity.y > -0.5);
+    
+    // If we have collisions or ray hits, update last ground contact time
+    if (hasGroundCollisions || hasRayHits) {
+      lastGroundContact.value = currentTime;
+    }
+    
+    // Log grounding state changes
+    if (isGrounded.value !== wasGrounded.value) {
+      if (isGrounded.value) {
+        console.log("Player became grounded - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits, "Vel Y:", velocity.y.toFixed(2));
+      } else {
+        console.log("Player became airborne - Collisions:", groundCollisions.value.size, "Ray hits:", hasRayHits, "Vel Y:", velocity.y.toFixed(2));
+      }
+    }
+    
+    // Debug logging every 60 frames (1 second at 60fps)
+    if (frameCount.value % 60 === 0) {
+      console.log("Ground check - Collisions:", groundCollisions.value.size, 
+                  "Ray hits:", hasRayHits, 
+                  "Grounded:", isGrounded.value, 
+                  "Vel Y:", velocity.y.toFixed(2),
+                  "Player pos:", playerPos.x.toFixed(1), playerPos.y.toFixed(1), playerPos.z.toFixed(1));
+    }
+  } catch (e) {
+    console.error("Error checking grounded state:", e);
+  }
+};
+
+// Add collision event handling after createPlayer function
+const setupCollisionHandling = () => {
+  if (!physicsWorld.value) return;
+  
+  try {
+    // Set up collision event handling
+    physicsWorld.value.eventQueue = new RAPIER.EventQueue(true);
+    
+    console.log("Collision event handling set up successfully");
+    
+    // Also set up contact force events for additional detection
+    physicsWorld.value.contactForceEventQueue = new RAPIER.EventQueue(true);
+    
+  } catch (e) {
+    console.error("Error setting up collision handling:", e);
+  }
+};
+
+// Modify the animate function to include better collision processing
 const animate = () => {
   if (!started.value) return;
   
@@ -721,6 +736,18 @@ const animate = () => {
         physicsWorld.value.step();
         // Process collision events after physics step
         processCollisionEvents();
+        
+        // Also process contact force events if available
+        if (physicsWorld.value.contactForceEventQueue) {
+          physicsWorld.value.contactForceEventQueue.drainContactForceEvents((event) => {
+            // Contact force events can help with grounding detection
+            if (debugInfo.playerColliderHandle && 
+                (event.collider1() === debugInfo.playerColliderHandle || 
+                 event.collider2() === debugInfo.playerColliderHandle)) {
+              lastGroundContact.value = performance.now();
+            }
+          });
+        }
       } catch (e) {
         console.error("Error stepping physics world:", e);
       }
@@ -745,14 +772,14 @@ const animate = () => {
     // Update visual transform after physics
     updatePlayerTransform();
     
-    // Update ray visualizations (for orientation only)
+    // Update ray visualizations
     if (player.value && rayDir.value) {
       updateRayVisualizations(
         leftFootPos.value.clone(), 
         rightFootPos.value.clone(), 
         centerFootPos.value.clone(), 
         rayDir.value, 
-        5.0
+        2.0  // Shorter rays for grounding
       );
     }
     
